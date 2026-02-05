@@ -253,9 +253,9 @@ flowchart TD
     D --> I[Durable Objects]
     D --> J[Scheduled / Queue / etc.]
 
-    style C fill:#f96,stroke:#333
-    style D fill:#fcb,stroke:#333
-    style H fill:#6cf,stroke:#333
+    style C fill:#d4a373,stroke:#555,color:#1a1a1a
+    style D fill:#e0c9a6,stroke:#555,color:#1a1a1a
+    style H fill:#a3b8c8,stroke:#555,color:#1a1a1a
 ```
 
 ### Build mode
@@ -269,8 +269,8 @@ flowchart LR
     C --> D[sveltekit-cloudflare-worker]
     D --> E["Patched _worker.js<br/>SvelteKit + your exports"]
 
-    style D fill:#fcb,stroke:#333
-    style E fill:#6c6,stroke:#333
+    style D fill:#e0c9a6,stroke:#555,color:#1a1a1a
+    style E fill:#a6c4a0,stroke:#555,color:#1a1a1a
 ```
 
 ## License
