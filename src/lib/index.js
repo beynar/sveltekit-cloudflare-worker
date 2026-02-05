@@ -1,6 +1,5 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
-import { build } from 'esbuild';
 
 const KNOWN_HANDLERS = ['fetch', 'scheduled', 'queue', 'email', 'tail', 'trace', 'tailStream'];
 
@@ -135,6 +134,7 @@ function buildPlugin(workerFile, log) {
 				const workerDestDir = path.dirname(workerDest);
 				const userWorkerDest = path.join(workerDestDir, '_user-worker.js');
 
+				const { build } = await import('esbuild');
 				await build({
 					entryPoints: [workerPath],
 					outfile: userWorkerDest,
