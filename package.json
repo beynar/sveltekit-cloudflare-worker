@@ -68,6 +68,7 @@
 	],
 	"dependencies": {
 		"@sveltejs/adapter-cloudflare": "^7.2.6",
+		"sugar-high": "^0.9.5",
 		"sveltekit-cloudflare-worker": "file:./sveltekit-cloudflare-worker"
 	}
 }

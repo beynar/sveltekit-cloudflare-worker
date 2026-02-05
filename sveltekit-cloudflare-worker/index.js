@@ -2,7 +2,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { build } from 'esbuild';
 
-const KNOWN_HANDLERS = ['fetch', 'scheduled', 'queue', 'email', 'tail', 'trace'];
+const KNOWN_HANDLERS = ['fetch', 'scheduled', 'queue', 'email', 'tail', 'trace', 'tailStream'];
 
 /**
  * @param {import('./index.js').CloudflareWorkerOptions} [options]
@@ -10,6 +10,10 @@ const KNOWN_HANDLERS = ['fetch', 'scheduled', 'queue', 'email', 'tail', 'trace']
  */
 export async function cloudflareWorker(options = {}) {
 	const workerFile = options.workerFile ?? 'src/worker.ts';
+	const verbose = options.verbose ?? false;
+	const log = verbose
+		? (...args) => console.log('[sveltekit-cloudflare-worker]', ...args)
+		: () => {};
 
 	// Eagerly import @cloudflare/vite-plugin for dev mode.
 	// The config customizer defers actual work until Vite resolves config.
@@ -73,19 +77,20 @@ export async function cloudflareWorker(options = {}) {
 
 			const source = readFileSync(workerPath, 'utf-8');
 			const exports = parseExports(source);
-			devEntryPath = generateDevEntry(root, workerFile, exports);
+			devEntryPath = generateDevEntry(root, workerFile, exports, log);
 		}
 	};
 
-	return [devSetupPlugin, ...cfPlugins, buildPlugin(workerFile)];
+	return [devSetupPlugin, ...cfPlugins, buildPlugin(workerFile, log)];
 }
 
 /**
  * Build-mode plugin: patches _worker.js after adapter-cloudflare generates it.
  * @param {string} workerFile
+ * @param {(...args: any[]) => void} log
  * @returns {import('vite').Plugin}
  */
-function buildPlugin(workerFile) {
+function buildPlugin(workerFile, log) {
 	/** @type {string} */
 	let root;
 
@@ -122,7 +127,7 @@ function buildPlugin(workerFile) {
 				const exports = parseExports(source);
 
 				if (exports.classes.length === 0 && exports.handlers.length === 0) {
-					console.log('[sveltekit-cloudflare-worker] No exports found in worker file, skipping.');
+					log('No exports found in worker file, skipping.');
 					return;
 				}
 
@@ -148,8 +153,8 @@ function buildPlugin(workerFile) {
 
 				writeFileSync(workerDest, patched);
 
-				console.log(
-					`[sveltekit-cloudflare-worker] Patched ${path.basename(workerDest)} with:` +
+				log(
+					`Patched ${path.basename(workerDest)} with:` +
 						(exports.handlers.length ? ` handlers=[${exports.handlers.join(', ')}]` : '') +
 						(exports.classes.length ? ` classes=[${exports.classes.join(', ')}]` : '')
 				);
@@ -164,9 +169,10 @@ function buildPlugin(workerFile) {
  * @param {string} root
  * @param {string} workerFile
  * @param {{ handlers: string[], classes: string[] }} exports
+ * @param {(...args: any[]) => void} log
  * @returns {string} Absolute path to the generated entry file
  */
-function generateDevEntry(root, workerFile, exports) {
+function generateDevEntry(root, workerFile, exports, log) {
 	const dir = path.resolve(root, '.svelte-kit/cloudflare-worker');
 	mkdirSync(dir, { recursive: true });
 
@@ -196,46 +202,41 @@ function generateDevEntry(root, workerFile, exports) {
 		lines.push('');
 	}
 
-	// Re-export non-fetch handlers directly
-	const otherHandlers = exports.handlers.filter((h) => h !== 'fetch');
-	for (const handler of otherHandlers) {
-		lines.push(`export { ${handler} } from '${importPath}';`);
-	}
-
-	if (otherHandlers.length > 0) {
-		lines.push('');
-	}
-
-	// Default export with fetch wrapper
+	// Default export with all handlers
 	const hasFetch = exports.handlers.includes('fetch');
+	const otherHandlers = exports.handlers.filter((h) => h !== 'fetch');
+
+	const defaultEntries = [];
 
 	if (hasFetch) {
-		lines.push(`export default {`);
-		lines.push(
-			`  async fetch(request: Request, env: any, ctx: ExecutionContext): Promise<Response> {`
+		defaultEntries.push(
+			`  async fetch(request: Request, env: any, ctx: ExecutionContext): Promise<Response> {\n` +
+				`    const next = () => env.ASSETS.fetch(request);\n` +
+				`    const response = await __userWorker.fetch(request, env, ctx, next);\n` +
+				`    if (response) return response;\n` +
+				`    return next();\n` +
+				`  }`
 		);
-		lines.push(`    const response = await __userWorker.fetch(request, env, ctx);`);
-		lines.push(`    if (response) return response;`);
-		lines.push(`    // Fall through to SvelteKit via the ASSETS binding`);
-		lines.push(`    return env.ASSETS.fetch(request);`);
-		lines.push(`  }`);
-		lines.push(`};`);
 	} else {
-		lines.push(`export default {`);
-		lines.push(
-			`  async fetch(request: Request, env: any, ctx: ExecutionContext): Promise<Response> {`
+		defaultEntries.push(
+			`  async fetch(request: Request, env: any, ctx: ExecutionContext): Promise<Response> {\n` +
+				`    return env.ASSETS.fetch(request);\n` +
+				`  }`
 		);
-		lines.push(`    return env.ASSETS.fetch(request);`);
-		lines.push(`  }`);
-		lines.push(`};`);
 	}
+
+	for (const handler of otherHandlers) {
+		defaultEntries.push(`  ${handler}: __userWorker.${handler}`);
+	}
+
+	lines.push(`export default {`);
+	lines.push(defaultEntries.join(',\n'));
+	lines.push(`};`);
 
 	lines.push('');
 
 	writeFileSync(entryPath, lines.join('\n'));
-	console.log(
-		`[sveltekit-cloudflare-worker] Generated dev entry at ${path.relative(root, entryPath)}`
-	);
+	log(`Generated dev entry at ${path.relative(root, entryPath)}`);
 
 	return entryPath;
 }
@@ -288,9 +289,10 @@ function buildExportBlock(exports) {
 	if (hasFetch) {
 		defaultEntries.push(
 			`  async fetch(req, env, ctx) {\n` +
-				`    const res = await __userWorker.fetch(req, env, ctx);\n` +
+				`    const next = () => worker_default.fetch(req, env, ctx);\n` +
+				`    const res = await __userWorker.fetch(req, env, ctx, next);\n` +
 				`    if (res) return res;\n` +
-				`    return worker_default.fetch(req, env, ctx);\n` +
+				`    return next();\n` +
 				`  }`
 		);
 	} else {

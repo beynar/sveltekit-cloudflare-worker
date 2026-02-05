@@ -13,6 +13,11 @@ export interface CloudflareWorkerOptions {
 	 * @default 'src/worker.ts'
 	 */
 	workerFile?: string;
+	/**
+	 * Enable verbose logging.
+	 * @default false
+	 */
+	verbose?: boolean;
 }
 
 /**
@@ -28,11 +33,13 @@ export function cloudflareWorker(options?: CloudflareWorkerOptions): Promise<Plu
 /**
  * Fetch handler that acts as middleware before SvelteKit.
  * Return a Response to short-circuit, or return nothing to fall through to SvelteKit.
+ * Call `next()` to invoke SvelteKit and optionally transform its response.
  */
 export type WorkerFetch<Env = App.Platform['env']> = (
 	request: Request,
 	env: Env,
-	ctx: ExecutionContext
+	ctx: ExecutionContext,
+	next: () => Promise<Response>
 ) => Response | void | Promise<Response | void>;
 
 export type WorkerScheduled<Env = App.Platform['env']> = (
@@ -64,3 +71,7 @@ export type WorkerTrace<Env = App.Platform['env']> = (
 	env: Env,
 	ctx: ExecutionContext
 ) => void | Promise<void>;
+
+export type WorkerTailStream<Env = App.Platform['env']> = (
+	event: TailStream.TailEvent<TailStream.Onset>
+) => TailStream.TailEventHandlerType | Promise<TailStream.TailEventHandlerType>;

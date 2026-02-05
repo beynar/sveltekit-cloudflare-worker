@@ -11,6 +11,6 @@
 		"strict": true,
 		"module": "NodeNext",
 		"moduleResolution": "NodeNext",
-		"types": ["@cloudflare/workers-types"]
+		"types": ["./worker-configuration.d.ts"]
 	}
 }

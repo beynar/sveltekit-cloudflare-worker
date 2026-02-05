@@ -12,6 +12,10 @@
 		{
 			"tag": "v1",
 			"new_sqlite_classes": ["MyDurableObject"]
+		},
+		{
+			"tag": "v2",
+			"new_classes": ["ChatRoom"]
 		}
 	],
 	"durable_objects": {
@@ -19,8 +23,23 @@
 			{
 				"name": "MY_DO",
 				"class_name": "MyDurableObject",
-				"script_name": "DO"
+				"script_name": "self"
+			},
+			{
+				"name": "CHAT_ROOM",
+				"class_name": "ChatRoom",
+				"script_name": "self"
 			}
 		]
-	}
+	},
+	"ratelimits": [
+		{
+			"name": "RATELIMIT_CHAT",
+			"namespace_id": "1001",
+			"simple": {
+				"limit": 10,
+				"period": 60
+			}
+		}
+	]
 }
