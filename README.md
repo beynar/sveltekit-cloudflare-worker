@@ -119,11 +119,11 @@ Standard `wrangler.jsonc` — add bindings for DOs, KV, D1, etc. as usual:
 }
 ```
 
-## Suppressing dev warnings
+## Dev warnings
 
-During `vite dev`, wrangler may emit warnings about internal Durable Objects not working in local development. These are false positives — the plugin handles DO resolution via `@cloudflare/vite-plugin`'s wrapper module.
+During `vite dev`, wrangler may emit warnings about Durable Object classes not being exported from the worker. These are harmless false positives — the plugin handles DO resolution via `@cloudflare/vite-plugin`'s wrapper module.
 
-To suppress them, add a `script_name` to your DO bindings in `wrangler.jsonc`:
+To suppress them, add `script_name` to your DO bindings:
 
 ```jsonc
 {
@@ -139,7 +139,7 @@ To suppress them, add a `script_name` to your DO bindings in `wrangler.jsonc`:
 }
 ```
 
-The value must differ from your worker's `name` in `wrangler.jsonc` (e.g. use `"self"`). The plugin strips `script_name` before passing the config to the cloudflare vite plugin, so DOs are always treated as local during dev. The field only exists to silence wrangler's config validation.
+The plugin automatically strips `script_name` from your wrangler config at build time so it doesn't break production deploys.
 
 ## Supported exports
 

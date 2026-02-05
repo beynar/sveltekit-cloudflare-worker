@@ -158,6 +158,11 @@ function buildPlugin(workerFile, log) {
 						(exports.handlers.length ? ` handlers=[${exports.handlers.join(', ')}]` : '') +
 						(exports.classes.length ? ` classes=[${exports.classes.join(', ')}]` : '')
 				);
+
+				// Strip script_name from DO bindings in wrangler config so
+				// deploys don't fail. Users can keep script_name in their config
+				// to suppress dev warnings — we clean it up at build time.
+				stripScriptNameFromConfig(root, log);
 			}
 		}
 	};
@@ -337,4 +342,40 @@ function findWorkerDest(root) {
 	}
 
 	return path.resolve(root, '.svelte-kit/cloudflare/_worker.js');
+}
+
+/**
+ * Strip script_name from DO bindings in wrangler config on disk.
+ * Users add script_name to suppress dev warnings; we remove it at
+ * build time so deploys don't fail.
+ * @param {string} root
+ * @param {(...args: any[]) => void} log
+ */
+function stripScriptNameFromConfig(root, log) {
+	const configPaths = ['wrangler.jsonc', 'wrangler.json'];
+
+	for (const configPath of configPaths) {
+		const fullPath = path.resolve(root, configPath);
+		if (!existsSync(fullPath)) continue;
+
+		const raw = readFileSync(fullPath, 'utf-8');
+
+		// Use regex to remove "script_name": "..." entries while preserving
+		// comments and formatting in jsonc files.
+		// Matches: "script_name": "value" with optional trailing comma and whitespace/newline
+		const stripped = raw.replace(/,?\s*"script_name"\s*:\s*"[^"]*"\s*,?/g, (match) => {
+			// If the match has commas on both sides, keep one comma
+			const leadingComma = match.trimStart().startsWith(',');
+			const trailingComma = match.trimEnd().endsWith(',');
+			if (leadingComma && trailingComma) return ',';
+			return '';
+		});
+
+		if (stripped !== raw) {
+			writeFileSync(fullPath, stripped);
+			log(`Stripped script_name from ${configPath}`);
+		}
+
+		return;
+	}
 }
