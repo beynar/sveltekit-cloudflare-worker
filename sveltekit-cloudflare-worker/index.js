@@ -36,7 +36,18 @@ export async function cloudflareWorker(options = {}) {
 				if (config.compatibility_flags) {
 					config.compatibility_flags = [...new Set(config.compatibility_flags)];
 				}
-				return config;
+				// Strip script_name from DO bindings so the vite plugin treats them
+				// as local (handled by the wrapper module). Without this, users who
+				// add script_name to suppress wrangler warnings get "Couldn't find
+				// the durable Object" errors from the vite plugin.
+				if (config.durable_objects?.bindings) {
+					for (const binding of config.durable_objects.bindings) {
+						delete binding.script_name;
+					}
+				}
+				// Don't return config — mutate in place only.
+				// Returning it causes defu() to merge the object with itself,
+				// duplicating arrays like migrations.
 			}
 		});
 		// Filter cloudflare plugins to only run in dev

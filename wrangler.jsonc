@@ -8,11 +8,18 @@
 		"binding": "ASSETS",
 		"directory": ".svelte-kit/cloudflare"
 	},
+	"migrations": [
+		{
+			"tag": "v1",
+			"new_sqlite_classes": ["MyDurableObject"]
+		}
+	],
 	"durable_objects": {
 		"bindings": [
 			{
 				"name": "MY_DO",
-				"class_name": "MyDurableObject"
+				"class_name": "MyDurableObject",
+				"script_name": "DO"
 			}
 		]
 	}

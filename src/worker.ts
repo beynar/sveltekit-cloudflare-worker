@@ -1,12 +1,7 @@
 import type { WorkerFetch, WorkerScheduled } from 'sveltekit-cloudflare-worker';
 import { DurableObject } from 'cloudflare:workers';
 
-interface Env {
-	MY_DO: DurableObjectNamespace<MyDurableObject>;
-	ASSETS: Fetcher;
-}
-
-export const fetch: WorkerFetch<Env> = async (req, env, ctx) => {
+export const fetch: WorkerFetch = async (req, env, ctx) => {
 	const url = new URL(req.url);
 
 	if (url.pathname === '/api/do') {

@@ -13,7 +13,7 @@ importers:
         version: 7.2.6(@sveltejs/kit@2.50.2(@sveltejs/vite-plugin-svelte@6.2.4(svelte@5.49.2)(vite@7.3.1(@types/node@22.19.8)(jiti@2.6.1)(lightningcss@1.30.2)))(svelte@5.49.2)(typescript@5.9.3)(vite@7.3.1(@types/node@22.19.8)(jiti@2.6.1)(lightningcss@1.30.2)))(wrangler@4.62.0(@cloudflare/workers-types@4.20260203.0))
       sveltekit-cloudflare-worker:
         specifier: file:./sveltekit-cloudflare-worker
-        version: file:sveltekit-cloudflare-worker(esbuild@0.27.2)(vite@7.3.1(@types/node@22.19.8)(jiti@2.6.1)(lightningcss@1.30.2))
+        version: file:sveltekit-cloudflare-worker(@cloudflare/vite-plugin@file:@cloudflare-vite-plugin(vite@7.3.1(@types/node@22.19.8)(jiti@2.6.1)(lightningcss@1.30.2))(workerd@1.20260131.0)(wrangler@4.62.0(@cloudflare/workers-types@4.20260203.0)))(esbuild@0.27.2)(vite@7.3.1(@types/node@22.19.8)(jiti@2.6.1)(lightningcss@1.30.2))
     devDependencies:
       '@cloudflare/vite-plugin':
         specifier: file:@cloudflare-vite-plugin
@@ -1811,6 +1811,7 @@ packages:
   sveltekit-cloudflare-worker@file:sveltekit-cloudflare-worker:
     resolution: {directory: sveltekit-cloudflare-worker, type: directory}
     peerDependencies:
+      '@cloudflare/vite-plugin': '>=1.0.0'
       esbuild: '*'
       vite: '>=5.0.0'
 
@@ -3491,8 +3492,9 @@ snapshots:
       magic-string: 0.30.21
       zimmerframe: 1.1.4
 
-  sveltekit-cloudflare-worker@file:sveltekit-cloudflare-worker(esbuild@0.27.2)(vite@7.3.1(@types/node@22.19.8)(jiti@2.6.1)(lightningcss@1.30.2)):
+  sveltekit-cloudflare-worker@file:sveltekit-cloudflare-worker(@cloudflare/vite-plugin@file:@cloudflare-vite-plugin(vite@7.3.1(@types/node@22.19.8)(jiti@2.6.1)(lightningcss@1.30.2))(workerd@1.20260131.0)(wrangler@4.62.0(@cloudflare/workers-types@4.20260203.0)))(esbuild@0.27.2)(vite@7.3.1(@types/node@22.19.8)(jiti@2.6.1)(lightningcss@1.30.2)):
     dependencies:
+      '@cloudflare/vite-plugin': file:@cloudflare-vite-plugin(vite@7.3.1(@types/node@22.19.8)(jiti@2.6.1)(lightningcss@1.30.2))(workerd@1.20260131.0)(wrangler@4.62.0(@cloudflare/workers-types@4.20260203.0))
       esbuild: 0.27.2
       vite: 7.3.1(@types/node@22.19.8)(jiti@2.6.1)(lightningcss@1.30.2)
 

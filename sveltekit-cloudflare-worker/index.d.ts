@@ -1,4 +1,11 @@
 import type { Plugin } from 'vite';
+import type {
+	ExecutionContext,
+	ScheduledController,
+	MessageBatch,
+	ForwardableEmailMessage,
+	TraceItem
+} from '@cloudflare/workers-types';
 
 export interface CloudflareWorkerOptions {
 	/**
@@ -22,37 +29,37 @@ export function cloudflareWorker(options?: CloudflareWorkerOptions): Promise<Plu
  * Fetch handler that acts as middleware before SvelteKit.
  * Return a Response to short-circuit, or return nothing to fall through to SvelteKit.
  */
-export type WorkerFetch<Env = unknown> = (
+export type WorkerFetch<Env = App.Platform['env']> = (
 	request: Request,
 	env: Env,
 	ctx: ExecutionContext
 ) => Response | void | Promise<Response | void>;
 
-export type WorkerScheduled<Env = unknown> = (
+export type WorkerScheduled<Env = App.Platform['env']> = (
 	controller: ScheduledController,
 	env: Env,
 	ctx: ExecutionContext
 ) => void | Promise<void>;
 
-export type WorkerQueue<Env = unknown, Message = unknown> = (
+export type WorkerQueue<Env = App.Platform['env'], Message = unknown> = (
 	batch: MessageBatch<Message>,
 	env: Env,
 	ctx: ExecutionContext
 ) => void | Promise<void>;
 
-export type WorkerEmail<Env = unknown> = (
+export type WorkerEmail<Env = App.Platform['env']> = (
 	message: ForwardableEmailMessage,
 	env: Env,
 	ctx: ExecutionContext
 ) => void | Promise<void>;
 
-export type WorkerTail<Env = unknown> = (
+export type WorkerTail<Env = App.Platform['env']> = (
 	events: TraceItem[],
 	env: Env,
 	ctx: ExecutionContext
 ) => void | Promise<void>;
 
-export type WorkerTrace<Env = unknown> = (
+export type WorkerTrace<Env = App.Platform['env']> = (
 	traces: TraceItem[],
 	env: Env,
 	ctx: ExecutionContext
