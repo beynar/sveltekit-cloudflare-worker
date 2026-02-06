@@ -119,27 +119,25 @@ Standard `wrangler.jsonc` — add bindings for DOs, KV, D1, etc. as usual:
 }
 ```
 
-## Dev warnings
+### Configure the adapter (optional)
 
-During `vite dev`, wrangler may emit warnings about Durable Object classes not being exported from the worker. These are harmless false positives — the plugin handles DO resolution via `@cloudflare/vite-plugin`'s wrapper module.
+If you use Durable Objects, you may see workerd warnings about DO classes during `vite dev`. To suppress them, pass `proxyConfig()` to the adapter:
 
-To suppress them, add `script_name` to your DO bindings:
+```js
+// svelte.config.js
+import adapter from '@sveltejs/adapter-cloudflare';
+import { proxyConfig } from 'sveltekit-cloudflare-worker';
 
-```jsonc
-{
-	"durable_objects": {
-		"bindings": [
-			{
-				"name": "MY_DO",
-				"class_name": "MyDurableObject",
-				"script_name": "self"
-			}
-		]
+export default {
+	kit: {
+		adapter: adapter({
+			platformProxy: { configPath: await proxyConfig() }
+		})
 	}
-}
+};
 ```
 
-The plugin automatically strips `script_name` from your wrangler config at build time so it doesn't break production deploys.
+`proxyConfig()` reads your wrangler config, adds `script_name` to Durable Object bindings to suppress workerd validation warnings, writes the result to a temp file, and returns its path.
 
 ## Supported exports
 

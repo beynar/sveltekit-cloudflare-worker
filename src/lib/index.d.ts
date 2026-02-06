@@ -31,6 +31,28 @@ export interface CloudflareWorkerOptions {
 export function cloudflareWorker(options?: CloudflareWorkerOptions): Promise<Plugin[]>;
 
 /**
+ * Reads the wrangler config, adds `script_name` to Durable Object bindings
+ * to suppress workerd startup warnings, writes to a temp file, and returns
+ * the path to that file.
+ *
+ * @example
+ * ```js
+ * // svelte.config.js
+ * import adapter from '@sveltejs/adapter-cloudflare';
+ * import { proxyConfig } from 'worker-svelte-kit';
+ *
+ * export default {
+ *   kit: {
+ *     adapter: adapter({
+ *       platformProxy: { configPath: await proxyConfig() }
+ *     })
+ *   }
+ * };
+ * ```
+ */
+export function proxyConfig(configPath?: string): Promise<string>;
+
+/**
  * Fetch handler that acts as middleware before SvelteKit.
  * Return a Response to short-circuit, or return nothing to fall through to SvelteKit.
  * Call `next()` to invoke SvelteKit and optionally transform its response.

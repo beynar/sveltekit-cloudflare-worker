@@ -39,15 +39,6 @@ export async function cloudflareWorker(options = {}) {
 				if (config.compatibility_flags) {
 					config.compatibility_flags = [...new Set(config.compatibility_flags)];
 				}
-				// Strip script_name from DO bindings so the vite plugin treats them
-				// as local (handled by the wrapper module). Without this, users who
-				// add script_name to suppress wrangler warnings get "Couldn't find
-				// the durable Object" errors from the vite plugin.
-				if (config.durable_objects?.bindings) {
-					for (const binding of config.durable_objects.bindings) {
-						delete binding.script_name;
-					}
-				}
 				// Don't return config — mutate in place only.
 				// Returning it causes defu() to merge the object with itself,
 				// duplicating arrays like migrations.
@@ -55,7 +46,9 @@ export async function cloudflareWorker(options = {}) {
 		});
 		// Filter cloudflare plugins to only run in dev
 		cfPlugins = cfPlugins.map((p) => ({ ...p, apply: 'serve' }));
-	} catch {
+	} catch (e) {
+		const isNotFound = e?.code === 'ERR_MODULE_NOT_FOUND' || e?.code === 'MODULE_NOT_FOUND';
+		if (!isNotFound) throw e;
 		// @cloudflare/vite-plugin not installed — dev mode without workerd
 	}
 
@@ -66,7 +59,7 @@ export async function cloudflareWorker(options = {}) {
 		apply: 'serve',
 		// Use enforce: 'pre' to run our config hook before cloudflare's
 		enforce: 'pre',
-		config(userConfig) {
+		async config(userConfig) {
 			const root = userConfig.root ? path.resolve(userConfig.root) : process.cwd();
 			const workerPath = path.resolve(root, workerFile);
 
@@ -74,8 +67,7 @@ export async function cloudflareWorker(options = {}) {
 				return;
 			}
 
-			const source = readFileSync(workerPath, 'utf-8');
-			const exports = parseExports(source);
+			const exports = await detectExports(workerPath);
 			devEntryPath = generateDevEntry(root, workerFile, exports, log);
 		}
 	};
@@ -110,7 +102,7 @@ function buildPlugin(workerFile, log) {
 					return;
 				}
 
-				const workerDest = findWorkerDest(root);
+				const workerDest = await findWorkerDest(root, log);
 				if (!existsSync(workerDest)) {
 					return;
 				}
@@ -122,22 +114,15 @@ function buildPlugin(workerFile, log) {
 					return;
 				}
 
-				const source = readFileSync(workerPath, 'utf-8');
-				const exports = parseExports(source);
-
-				if (exports.classes.length === 0 && exports.handlers.length === 0) {
-					log('No exports found in worker file, skipping.');
-					return;
-				}
-
-				// Bundle user worker
+				// Bundle user worker and detect exports in one esbuild pass
 				const workerDestDir = path.dirname(workerDest);
 				const userWorkerDest = path.join(workerDestDir, '_user-worker.js');
 
 				const { build } = await import('esbuild');
-				await build({
+				const result = await build({
 					entryPoints: [workerPath],
-					outfile: userWorkerDest,
+					write: false,
+					metafile: true,
 					format: 'esm',
 					platform: 'browser',
 					bundle: true,
@@ -145,6 +130,17 @@ function buildPlugin(workerFile, log) {
 					conditions: ['workerd'],
 					logLevel: 'warning'
 				});
+
+				const outputKey = Object.keys(result.metafile.outputs)[0];
+				const exports = classifyExports(result.metafile.outputs[outputKey].exports);
+
+				if (exports.classes.length === 0 && exports.handlers.length === 0) {
+					log('No exports found in worker file, skipping.');
+					return;
+				}
+
+				// Write the bundled user worker
+				writeFileSync(userWorkerDest, result.outputFiles[0].text);
 
 				// Patch _worker.js
 				const importLine = `import * as __userWorker from './_user-worker.js';\n`;
@@ -158,11 +154,6 @@ function buildPlugin(workerFile, log) {
 						(exports.handlers.length ? ` handlers=[${exports.handlers.join(', ')}]` : '') +
 						(exports.classes.length ? ` classes=[${exports.classes.join(', ')}]` : '')
 				);
-
-				// Strip script_name from DO bindings in wrangler config so
-				// deploys don't fail. Users can keep script_name in their config
-				// to suppress dev warnings — we clean it up at build time.
-				stripScriptNameFromConfig(root, log);
 			}
 		}
 	};
@@ -191,16 +182,18 @@ function generateDevEntry(root, workerFile, exports, log) {
 	}
 	// Remove .ts extension for the import (Vite handles resolution)
 	importPath = importPath.replace(/\.ts$/, '');
+	// Escape special characters for safe string interpolation in generated code
+	const safeImportPath = importPath.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
 
 	const lines = [];
 
 	// Import all from user's worker
-	lines.push(`import * as __userWorker from '${importPath}';`);
+	lines.push(`import * as __userWorker from '${safeImportPath}';`);
 	lines.push('');
 
 	// Re-export classes (DOs, Workflows, WorkerEntrypoints)
 	for (const cls of exports.classes) {
-		lines.push(`export { ${cls} } from '${importPath}';`);
+		lines.push(`export { ${cls} } from '${safeImportPath}';`);
 	}
 
 	if (exports.classes.length > 0) {
@@ -216,10 +209,11 @@ function generateDevEntry(root, workerFile, exports, log) {
 	if (hasFetch) {
 		defaultEntries.push(
 			`  async fetch(request: Request, env: any, ctx: ExecutionContext): Promise<Response> {\n` +
-				`    const next = () => env.ASSETS.fetch(request);\n` +
+				`    let _nextResponse: Promise<Response> | undefined;\n` +
+				`    const next = () => { _nextResponse = env.ASSETS.fetch(request); return _nextResponse; };\n` +
 				`    const response = await __userWorker.fetch(request, env, ctx, next);\n` +
 				`    if (response) return response;\n` +
-				`    return next();\n` +
+				`    return _nextResponse ?? next();\n` +
 				`  }`
 		);
 	} else {
@@ -246,28 +240,83 @@ function generateDevEntry(root, workerFile, exports, log) {
 	return entryPath;
 }
 
+/**
+ * Reads the wrangler config, adds script_name to DO bindings to suppress
+ * workerd warnings, writes it to a temp file, and returns the temp path.
+ *
+ * @param {string} [configPath]
+ * @returns {Promise<string>}
+ */
+export async function proxyConfig(configPath) {
+	const { unstable_readConfig } = await import('wrangler');
+	const config = unstable_readConfig({ config: configPath }, { hideWarnings: true });
+
+	const excludedFields = new Set([
+		'configPath',
+		'userConfigPath',
+		'topLevelName',
+		'definedEnvironments',
+		'targetEnvironment',
+		'unsafe'
+	]);
+	const rawConfig = Object.fromEntries(
+		Object.entries(config).filter(([key]) => !excludedFields.has(key))
+	);
+
+	if (rawConfig.durable_objects?.bindings) {
+		for (const binding of rawConfig.durable_objects.bindings) {
+			binding.script_name = 'self';
+		}
+	}
+
+	const dir = path.resolve('.svelte-kit/cloudflare-worker');
+	mkdirSync(dir, { recursive: true });
+	const outPath = path.join(dir, 'wrangler.proxy.json');
+	writeFileSync(outPath, JSON.stringify(rawConfig, null, '\t'));
+
+	return outPath;
+}
+
 // --- Shared utilities ---
 
 /**
- * Parse exports from the user's worker source file.
- * @param {string} source
+ * Detect exports from the user's worker file using esbuild's metafile.
+ * @param {string} workerPath
+ * @returns {Promise<{ handlers: string[], classes: string[] }>}
+ */
+async function detectExports(workerPath) {
+	const { build } = await import('esbuild');
+	const result = await build({
+		entryPoints: [workerPath],
+		write: false,
+		metafile: true,
+		bundle: true,
+		format: 'esm',
+		platform: 'browser',
+		external: ['cloudflare:*'],
+		conditions: ['workerd'],
+		logLevel: 'silent'
+	});
+
+	const outputKey = Object.keys(result.metafile.outputs)[0];
+	return classifyExports(result.metafile.outputs[outputKey].exports);
+}
+
+/**
+ * Classify export names into handlers and classes.
+ * @param {string[]} exportNames
  * @returns {{ handlers: string[], classes: string[] }}
  */
-function parseExports(source) {
+function classifyExports(exportNames) {
 	const handlers = [];
 	const classes = [];
 
-	const classRegex = /export\s+class\s+(\w+)/g;
-	let match;
-	while ((match = classRegex.exec(source)) !== null) {
-		classes.push(match[1]);
-	}
-
-	const fnRegex = /export\s+(?:const|let|var|(?:async\s+)?function)\s+(\w+)/g;
-	while ((match = fnRegex.exec(source)) !== null) {
-		const name = match[1];
+	for (const name of exportNames) {
+		if (name === 'default') continue;
 		if (KNOWN_HANDLERS.includes(name)) {
 			handlers.push(name);
+		} else {
+			classes.push(name);
 		}
 	}
 
@@ -294,10 +343,11 @@ function buildExportBlock(exports) {
 	if (hasFetch) {
 		defaultEntries.push(
 			`  async fetch(req, env, ctx) {\n` +
-				`    const next = () => worker_default.fetch(req, env, ctx);\n` +
+				`    let _nextResponse;\n` +
+				`    const next = () => { _nextResponse = worker_default.fetch(req, env, ctx); return _nextResponse; };\n` +
 				`    const res = await __userWorker.fetch(req, env, ctx, next);\n` +
 				`    if (res) return res;\n` +
-				`    return next();\n` +
+				`    return _nextResponse ?? next();\n` +
 				`  }`
 		);
 	} else {
@@ -315,67 +365,21 @@ function buildExportBlock(exports) {
 
 /**
  * Find the generated _worker.js path by reading wrangler config.
+ * Uses wrangler's own config parser to handle JSONC, JSON, and TOML.
  * @param {string} root
- * @returns {string}
+ * @param {(...args: any[]) => void} log
+ * @returns {Promise<string>}
  */
-function findWorkerDest(root) {
-	const configPaths = ['wrangler.jsonc', 'wrangler.json', 'wrangler.toml'];
-
-	for (const configPath of configPaths) {
-		const fullPath = path.resolve(root, configPath);
-		if (!existsSync(fullPath)) continue;
-
-		if (configPath.endsWith('.toml')) {
-			break;
+async function findWorkerDest(root, log) {
+	try {
+		const { unstable_readConfig } = await import('wrangler');
+		const config = unstable_readConfig({}, { hideWarnings: true });
+		if (config.main) {
+			return path.resolve(root, config.main);
 		}
-
-		try {
-			const raw = readFileSync(fullPath, 'utf-8');
-			const json = raw.replace(/^\s*\/\/.*$/gm, '');
-			const config = JSON.parse(json);
-			if (config.main) {
-				return path.resolve(root, config.main);
-			}
-		} catch {
-			// Fall through to default
-		}
+	} catch (e) {
+		log(`Warning: Failed to read wrangler config: ${e.message}`);
 	}
 
 	return path.resolve(root, '.svelte-kit/cloudflare/_worker.js');
-}
-
-/**
- * Strip script_name from DO bindings in wrangler config on disk.
- * Users add script_name to suppress dev warnings; we remove it at
- * build time so deploys don't fail.
- * @param {string} root
- * @param {(...args: any[]) => void} log
- */
-function stripScriptNameFromConfig(root, log) {
-	const configPaths = ['wrangler.jsonc', 'wrangler.json'];
-
-	for (const configPath of configPaths) {
-		const fullPath = path.resolve(root, configPath);
-		if (!existsSync(fullPath)) continue;
-
-		const raw = readFileSync(fullPath, 'utf-8');
-
-		// Use regex to remove "script_name": "..." entries while preserving
-		// comments and formatting in jsonc files.
-		// Matches: "script_name": "value" with optional trailing comma and whitespace/newline
-		const stripped = raw.replace(/,?\s*"script_name"\s*:\s*"[^"]*"\s*,?/g, (match) => {
-			// If the match has commas on both sides, keep one comma
-			const leadingComma = match.trimStart().startsWith(',');
-			const trailingComma = match.trimEnd().endsWith(',');
-			if (leadingComma && trailingComma) return ',';
-			return '';
-		});
-
-		if (stripped !== raw) {
-			writeFileSync(fullPath, stripped);
-			log(`Stripped script_name from ${configPath}`);
-		}
-
-		return;
-	}
 }

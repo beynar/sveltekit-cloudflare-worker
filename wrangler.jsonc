@@ -22,13 +22,11 @@
 		"bindings": [
 			{
 				"name": "MY_DO",
-				"class_name": "MyDurableObject",
-				"script_name": "self"
+				"class_name": "MyDurableObject"
 			},
 			{
 				"name": "CHAT_ROOM",
-				"class_name": "ChatRoom",
-				"script_name": "self"
+				"class_name": "ChatRoom"
 			}
 		]
 	},
