@@ -118,6 +118,73 @@
 		}
 	}
 
+	// --- Workflow demo ---
+	type WorkflowMessage = {
+		type: 'workflow-progress';
+		step: number;
+		totalSteps: number;
+		label: string;
+		status: 'running' | 'waiting' | 'completed' | 'error';
+		workflowId: string;
+	};
+
+	let workflowRunning = $state(false);
+	let workflowProgress = $state<WorkflowMessage | null>(null);
+	let workflowWs = $state<WebSocket | null>(null);
+	let workflowId = $state<string | null>(null);
+	let approvalLoading = $state(false);
+
+	function ensureWorkflowWs(): Promise<WebSocket> {
+		if (workflowWs && workflowWs.readyState === WebSocket.OPEN) {
+			return Promise.resolve(workflowWs);
+		}
+		return new Promise((resolve, reject) => {
+			const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+			const ws = new WebSocket(`${protocol}//${location.host}/api/workflow/ws`);
+
+			ws.onopen = () => {
+				workflowWs = ws;
+				resolve(ws);
+			};
+			ws.onerror = () => reject(new Error('WebSocket connection failed'));
+			ws.onmessage = (e) => {
+				try {
+					const msg = JSON.parse(e.data) as WorkflowMessage;
+					if (msg.type === 'workflow-progress') {
+						workflowProgress = msg;
+						if (msg.status === 'completed' || msg.status === 'error') {
+							workflowRunning = false;
+						}
+					}
+				} catch {}
+			};
+			ws.onclose = () => {
+				workflowWs = null;
+				workflowRunning = false;
+			};
+		});
+	}
+
+	async function startWorkflow() {
+		await ensureWorkflowWs();
+		workflowProgress = null;
+		workflowRunning = true;
+		const res = await fetch('/api/workflow/start', { method: 'POST' });
+		const data = await res.json();
+		workflowId = data.workflowId;
+	}
+
+	async function approveWorkflow(approved: boolean) {
+		if (!workflowId) return;
+		approvalLoading = true;
+		await fetch('/api/workflow/approve', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ workflowId, approved })
+		});
+		approvalLoading = false;
+	}
+
 	// --- Code examples ---
 	const honoCode = highlight(`import type { WorkerFetch } from 'sveltekit-cloudflare-worker';
 import { Hono } from 'hono';
@@ -348,6 +415,106 @@ export class ChatRoom extends DurableObject {
 					>
 						Leave
 					</button>
+				</div>
+			{/if}
+		</section>
+
+		<!-- Workflow demo -->
+		<section class="rounded-lg border border-zinc-800 bg-zinc-900 p-6">
+			<div class="mb-4">
+				<h3 class="text-lg font-semibold text-white">Cloudflare Workflow</h3>
+				<p class="mt-1 text-sm text-zinc-500">
+					A <code class="text-zinc-400">WorkflowEntrypoint</code> with 3 steps, reporting progress to
+					a <code class="text-zinc-400">DurableObject</code> via RPC, which broadcasts updates over
+					WebSocket.
+				</p>
+			</div>
+
+			<button
+				onclick={startWorkflow}
+				disabled={workflowRunning}
+				class="rounded bg-orange-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-orange-500 disabled:opacity-50"
+			>
+				{workflowRunning ? 'Running...' : 'Start Workflow'}
+			</button>
+
+			{#if workflowProgress}
+				<div class="mt-4 space-y-3">
+					<!-- Progress bar -->
+					<div class="h-2 w-full overflow-hidden rounded-full bg-zinc-800">
+						<div
+							class="h-full rounded-full transition-all duration-500 {workflowProgress.status ===
+							'completed'
+								? 'bg-green-500'
+								: workflowProgress.status === 'error'
+									? 'bg-red-500'
+									: workflowProgress.status === 'waiting'
+										? 'bg-yellow-500'
+										: 'bg-orange-500'}"
+							style="width: {(workflowProgress.step / workflowProgress.totalSteps) * 100}%"
+						></div>
+					</div>
+
+					<!-- Step info -->
+					<div class="flex items-center justify-between text-sm">
+						<span class="text-zinc-400">
+							Step {workflowProgress.step} / {workflowProgress.totalSteps}
+						</span>
+						<span
+							class="font-medium {workflowProgress.status === 'completed'
+								? 'text-green-400'
+								: workflowProgress.status === 'error'
+									? 'text-red-400'
+									: workflowProgress.status === 'waiting'
+										? 'text-yellow-400'
+										: 'text-orange-400'}"
+						>
+							{workflowProgress.label}
+						</span>
+					</div>
+
+					<!-- Approval buttons -->
+					{#if workflowProgress.status === 'waiting'}
+						<div
+							class="rounded border border-yellow-800 bg-yellow-950 px-4 py-3 text-sm text-yellow-400"
+						>
+							<p class="mb-3">AI image tagging requires your approval to continue.</p>
+							<div class="flex gap-2">
+								<button
+									onclick={() => approveWorkflow(true)}
+									disabled={approvalLoading}
+									class="rounded bg-green-600 px-4 py-1.5 text-sm font-medium text-white transition hover:bg-green-500 disabled:opacity-50"
+								>
+									Approve
+								</button>
+								<button
+									onclick={() => approveWorkflow(false)}
+									disabled={approvalLoading}
+									class="rounded bg-red-600 px-4 py-1.5 text-sm font-medium text-white transition hover:bg-red-500 disabled:opacity-50"
+								>
+									Reject
+								</button>
+							</div>
+						</div>
+					{/if}
+
+					<!-- Completion badge -->
+					{#if workflowProgress.status === 'completed'}
+						<div
+							class="rounded border border-green-800 bg-green-950 px-3 py-2 text-sm text-green-400"
+						>
+							Workflow completed successfully.
+						</div>
+					{/if}
+
+					<!-- Rejection badge -->
+					{#if workflowProgress.status === 'error'}
+						<div
+							class="rounded border border-red-800 bg-red-950 px-3 py-2 text-sm text-red-400"
+						>
+							{workflowProgress.label}
+						</div>
+					{/if}
 				</div>
 			{/if}
 		</section>

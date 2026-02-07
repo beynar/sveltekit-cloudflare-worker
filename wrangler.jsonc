@@ -16,6 +16,10 @@
 		{
 			"tag": "v2",
 			"new_classes": ["ChatRoom"]
+		},
+		{
+			"tag": "v3",
+			"new_classes": ["WorkflowOrchestrator"]
 		}
 	],
 	"durable_objects": {
@@ -27,9 +31,20 @@
 			{
 				"name": "CHAT_ROOM",
 				"class_name": "ChatRoom"
+			},
+			{
+				"name": "WORKFLOW_DO",
+				"class_name": "WorkflowOrchestrator"
 			}
 		]
 	},
+	"workflows": [
+		{
+			"name": "progress-workflow",
+			"binding": "PROGRESS_WORKFLOW",
+			"class_name": "ProgressWorkflow"
+		}
+	],
 	"ratelimits": [
 		{
 			"name": "RATELIMIT_CHAT",
