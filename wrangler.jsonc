@@ -1,0 +1,59 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "sveltekit-cloudflare-worker",
+	"main": ".svelte-kit/cloudflare/_worker.js",
+	"compatibility_date": "2025-01-01",
+	"compatibility_flags": ["nodejs_compat"],
+
+	"assets": {
+		"binding": "ASSETS",
+		"directory": ".svelte-kit/cloudflare"
+	},
+	"migrations": [
+		{
+			"tag": "v1",
+			"new_sqlite_classes": ["MyDurableObject"]
+		},
+		{
+			"tag": "v2",
+			"new_classes": ["ChatRoom"]
+		},
+		{
+			"tag": "v3",
+			"new_classes": ["WorkflowOrchestrator"]
+		}
+	],
+	"durable_objects": {
+		"bindings": [
+			{
+				"name": "MY_DO",
+				"class_name": "MyDurableObject"
+			},
+			{
+				"name": "CHAT_ROOM",
+				"class_name": "ChatRoom"
+			},
+			{
+				"name": "WORKFLOW_DO",
+				"class_name": "WorkflowOrchestrator"
+			}
+		]
+	},
+	"workflows": [
+		{
+			"name": "progress-workflow",
+			"binding": "PROGRESS_WORKFLOW",
+			"class_name": "ProgressWorkflow"
+		}
+	],
+	"ratelimits": [
+		{
+			"name": "RATELIMIT_CHAT",
+			"namespace_id": "1001",
+			"simple": {
+				"limit": 10,
+				"period": 60
+			}
+		}
+	]
+}
