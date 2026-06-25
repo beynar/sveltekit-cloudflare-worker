@@ -1,23 +1,8 @@
-import devtoolsJson from 'vite-plugin-devtools-json';
 import tailwindcss from '@tailwindcss/vite';
-import { defineConfig } from 'vitest/config';
+import { defineConfig } from 'vite';
 import { sveltekit } from '@sveltejs/kit/vite';
-import { cloudflareWorker } from './src/lib';
+import { cloudflareWorker } from './src/lib/index.js';
 
 export default defineConfig({
-	plugins: [tailwindcss(), sveltekit(), cloudflareWorker(), devtoolsJson()],
-	test: {
-		expect: { requireAssertions: true },
-		projects: [
-			{
-				extends: './vite.config.ts',
-				test: {
-					name: 'server',
-					environment: 'node',
-					include: ['src/**/*.{test,spec}.{js,ts}'],
-					exclude: ['src/**/*.svelte.{test,spec}.{js,ts}']
-				}
-			}
-		]
-	}
+	plugins: [tailwindcss(), sveltekit(), cloudflareWorker()]
 });

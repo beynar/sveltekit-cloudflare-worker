@@ -15,29 +15,32 @@
 	}
 
 	// --- Durable Object counter ---
+	type DurableObjectCountResponse = { count: number };
+	type WorkflowStartResponse = { workflowId: string };
+
 	let doCount = $state<number | null>(null);
 	let doLoading = $state(false);
 
+	async function fetchDurableObjectCount(path: string) {
+		const res = await fetch(path);
+		const data = (await res.json()) as DurableObjectCountResponse;
+		return data.count;
+	}
+
 	async function incrementDO() {
 		doLoading = true;
-		const res = await fetch('/api/do/increment');
-		const data = await res.json();
-		doCount = data.count;
+		doCount = await fetchDurableObjectCount('/__probe-sveltekit-bindings');
 		doLoading = false;
 	}
 
 	async function resetDO() {
 		doLoading = true;
-		const res = await fetch('/api/do/reset');
-		const data = await res.json();
-		doCount = data.count;
+		doCount = await fetchDurableObjectCount('/api/do/reset');
 		doLoading = false;
 	}
 
 	onMount(async () => {
-		const res = await fetch('/api/do/count');
-		const data = await res.json();
-		doCount = data.count;
+		doCount = await fetchDurableObjectCount('/api/do/count');
 	});
 
 	// --- SvelteKit fallthrough ---
@@ -53,6 +56,54 @@
 				? `${res.status} OK — ${(await res.text()).length} bytes`
 				: `${res.status}`;
 		skLoading = false;
+	}
+
+	// --- SvelteKit feature probes ---
+	type FeatureProbe = 'bindings' | 'remote' | 'read';
+	type ProbeResult = { status: number; passed: boolean; body: unknown };
+
+	let activeFeatureProbe = $state<FeatureProbe | null>(null);
+	let featureProbeResults = $state<Partial<Record<FeatureProbe, ProbeResult>>>({});
+
+	async function runFeatureProbe(name: FeatureProbe, path: string) {
+		activeFeatureProbe = name;
+		try {
+			const response = await fetch(path);
+			const body = await response.json();
+			featureProbeResults = {
+				...featureProbeResults,
+				[name]: {
+					status: response.status,
+					passed: response.ok && probePassed(name, body),
+					body
+				}
+			};
+		} catch (error) {
+			featureProbeResults = {
+				...featureProbeResults,
+				[name]: {
+					status: 0,
+					passed: false,
+					body: error instanceof Error ? error.message : String(error)
+				}
+			};
+		} finally {
+			activeFeatureProbe = null;
+		}
+	}
+
+	function probePassed(name: FeatureProbe, body: unknown) {
+		const serialized = JSON.stringify(body);
+
+		if (name === 'bindings') {
+			return serialized.includes('"ok":true') && serialized.includes('"MY_DO"');
+		}
+
+		if (name === 'remote') {
+			return serialized.includes('"type":"result"') && serialized.includes('hasDurableObject');
+		}
+
+		return serialized.includes('server readable demo asset');
 	}
 
 	// --- WebSocket chat ---
@@ -170,7 +221,7 @@
 		workflowProgress = null;
 		workflowRunning = true;
 		const res = await fetch('/api/workflow/start', { method: 'POST' });
-		const data = await res.json();
+		const data = (await res.json()) as WorkflowStartResponse;
 		workflowId = data.workflowId;
 	}
 
@@ -424,8 +475,8 @@ export class ChatRoom extends DurableObject {
 			<div class="mb-4">
 				<h3 class="text-lg font-semibold text-white">Cloudflare Workflow</h3>
 				<p class="mt-1 text-sm text-zinc-500">
-					A <code class="text-zinc-400">WorkflowEntrypoint</code> with 3 steps, reporting progress to
-					a <code class="text-zinc-400">DurableObject</code> via RPC, which broadcasts updates over
+					A <code class="text-zinc-400">WorkflowEntrypoint</code> with 3 steps, reporting progress
+					to a <code class="text-zinc-400">DurableObject</code> via RPC, which broadcasts updates over
 					WebSocket.
 				</p>
 			</div>
@@ -509,9 +560,7 @@ export class ChatRoom extends DurableObject {
 
 					<!-- Rejection badge -->
 					{#if workflowProgress.status === 'error'}
-						<div
-							class="rounded border border-red-800 bg-red-950 px-3 py-2 text-sm text-red-400"
-						>
+						<div class="rounded border border-red-800 bg-red-950 px-3 py-2 text-sm text-red-400">
 							{workflowProgress.label}
 						</div>
 					{/if}
@@ -538,6 +587,68 @@ export class ChatRoom extends DurableObject {
 			{#if skResult}
 				<pre
 					class="mt-4 overflow-x-auto rounded border border-zinc-800 bg-zinc-950 p-4 text-sm text-zinc-300">{skResult}</pre>
+			{/if}
+		</section>
+
+		<!-- SvelteKit feature probes -->
+		<section class="rounded-lg border border-zinc-800 bg-zinc-900 p-6">
+			<div class="mb-4">
+				<h3 class="text-lg font-semibold text-white">SvelteKit feature probes</h3>
+				<p class="mt-1 text-sm text-zinc-500">
+					These buttons hit real SvelteKit routes running inside the workerd SSR environment.
+				</p>
+			</div>
+
+			<div class="grid gap-3 sm:grid-cols-3">
+				<button
+					onclick={() => runFeatureProbe('bindings', '/__probe-sveltekit-bindings')}
+					disabled={activeFeatureProbe !== null}
+					class="rounded border border-zinc-700 bg-zinc-800 px-4 py-3 text-left text-sm font-medium text-zinc-200 transition hover:bg-zinc-700 disabled:opacity-50"
+				>
+					<span class="block text-white">Platform env</span>
+					<span class="mt-1 block text-xs font-normal text-zinc-500">Durable Object binding</span>
+				</button>
+				<button
+					onclick={() => runFeatureProbe('remote', '/__probe-remotes')}
+					disabled={activeFeatureProbe !== null}
+					class="rounded border border-zinc-700 bg-zinc-800 px-4 py-3 text-left text-sm font-medium text-zinc-200 transition hover:bg-zinc-700 disabled:opacity-50"
+				>
+					<span class="block text-white">Remote function</span>
+					<span class="mt-1 block text-xs font-normal text-zinc-500">$app/server context</span>
+				</button>
+				<button
+					onclick={() => runFeatureProbe('read', '/__probe-server-read')}
+					disabled={activeFeatureProbe !== null}
+					class="rounded border border-zinc-700 bg-zinc-800 px-4 py-3 text-left text-sm font-medium text-zinc-200 transition hover:bg-zinc-700 disabled:opacity-50"
+				>
+					<span class="block text-white">Server read</span>
+					<span class="mt-1 block text-xs font-normal text-zinc-500">$app/server.read()</span>
+				</button>
+			</div>
+
+			{#if activeFeatureProbe}
+				<p class="mt-4 text-sm text-zinc-500">Running {activeFeatureProbe} probe...</p>
+			{/if}
+
+			{#if Object.keys(featureProbeResults).length > 0}
+				<div class="mt-4 grid gap-2 sm:grid-cols-3">
+					{#each Object.entries(featureProbeResults) as [name, result]}
+						<div
+							class="rounded border px-3 py-2 text-sm {result.passed
+								? 'border-green-800 bg-green-950 text-green-300'
+								: 'border-red-800 bg-red-950 text-red-300'}"
+						>
+							<span class="font-medium">{name}</span>
+							<span class="ml-2 font-mono">{result.passed ? 'PASS' : 'FAIL'}</span>
+						</div>
+					{/each}
+				</div>
+				<pre
+					class="mt-4 overflow-x-auto rounded border border-zinc-800 bg-zinc-950 p-4 text-sm text-zinc-300">{JSON.stringify(
+						featureProbeResults,
+						null,
+						2
+					)}</pre>
 			{/if}
 		</section>
 

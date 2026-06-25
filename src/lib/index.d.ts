@@ -14,6 +14,14 @@ export interface CloudflareWorkerOptions {
 	 */
 	workerFile?: string;
 	/**
+	 * Path to the SvelteKit declaration file that receives the managed App.Platform.env block.
+	 * These types describe the Wrangler config shape. Runtime availability in local dev
+	 * comes from the workerd SSR runtime.
+	 * Set to false to disable automatic App.Platform.env type generation.
+	 * @default 'src/app.d.ts'
+	 */
+	typesFile?: string | false;
+	/**
 	 * Enable verbose logging.
 	 * @default false
 	 */
@@ -30,27 +38,20 @@ export interface CloudflareWorkerOptions {
  */
 export function cloudflareWorker(options?: CloudflareWorkerOptions): Promise<Plugin[]>;
 
-/**
- * Reads the wrangler config, adds `script_name` to Durable Object bindings
- * to suppress workerd startup warnings, writes to a temp file, and returns
- * the path to that file.
- *
- * @example
- * ```js
- * // svelte.config.js
- * import adapter from '@sveltejs/adapter-cloudflare';
- * import { proxyConfig } from 'worker-svelte-kit';
- *
- * export default {
- *   kit: {
- *     adapter: adapter({
- *       platformProxy: { configPath: await proxyConfig() }
- *     })
- *   }
- * };
- * ```
- */
-export function proxyConfig(configPath?: string): Promise<string>;
+export type WaitUntilLastTask = () => unknown | Promise<unknown>;
+
+export type WaitUntilWithLast = ExecutionContext['waitUntil'] & {
+	/**
+	 * Queue work that should start after other waitUntil promises registered before the handler returns.
+	 *
+	 * This accepts a function, not an already-created Promise, because Promises start immediately.
+	 */
+	last(task: WaitUntilLastTask): void;
+};
+
+export interface WaitUntilLastExecutionContext extends ExecutionContext {
+	waitUntil: WaitUntilWithLast;
+}
 
 /**
  * Fetch handler that acts as middleware before SvelteKit.
@@ -60,38 +61,38 @@ export function proxyConfig(configPath?: string): Promise<string>;
 export type WorkerFetch<Env = App.Platform['env']> = (
 	request: Request,
 	env: Env,
-	ctx: ExecutionContext,
+	ctx: WaitUntilLastExecutionContext,
 	next: () => Promise<Response>
 ) => Response | void | Promise<Response | void>;
 
 export type WorkerScheduled<Env = App.Platform['env']> = (
 	controller: ScheduledController,
 	env: Env,
-	ctx: ExecutionContext
+	ctx: WaitUntilLastExecutionContext
 ) => void | Promise<void>;
 
 export type WorkerQueue<Env = App.Platform['env'], Message = unknown> = (
 	batch: MessageBatch<Message>,
 	env: Env,
-	ctx: ExecutionContext
+	ctx: WaitUntilLastExecutionContext
 ) => void | Promise<void>;
 
 export type WorkerEmail<Env = App.Platform['env']> = (
 	message: ForwardableEmailMessage,
 	env: Env,
-	ctx: ExecutionContext
+	ctx: WaitUntilLastExecutionContext
 ) => void | Promise<void>;
 
 export type WorkerTail<Env = App.Platform['env']> = (
 	events: TraceItem[],
 	env: Env,
-	ctx: ExecutionContext
+	ctx: WaitUntilLastExecutionContext
 ) => void | Promise<void>;
 
 export type WorkerTrace<Env = App.Platform['env']> = (
 	traces: TraceItem[],
 	env: Env,
-	ctx: ExecutionContext
+	ctx: WaitUntilLastExecutionContext
 ) => void | Promise<void>;
 
 export type WorkerTailStream<Env = App.Platform['env']> = (

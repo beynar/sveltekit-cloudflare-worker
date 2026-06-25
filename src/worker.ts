@@ -1,5 +1,10 @@
-import type { WorkerFetch, WorkerScheduled } from 'sveltekit-cloudflare-worker';
-import { DurableObject, WorkflowEntrypoint } from 'cloudflare:workers';
+import type { WorkerFetch, WorkerScheduled } from './lib/index.js';
+import {
+	DurableObject,
+	WorkflowEntrypoint,
+	type WorkflowEvent,
+	type WorkflowStep
+} from 'cloudflare:workers';
 
 type WorkflowParams = {
 	orchestratorId: string;
@@ -290,7 +295,7 @@ export class ProgressWorkflow extends WorkflowEntrypoint<Env, WorkflowParams> {
 					});
 					return { rejected: true, requested: false };
 				});
-				return;
+				return { requested: false, rejected: true };
 			}
 			return { requested: true, rejected: false };
 		});
