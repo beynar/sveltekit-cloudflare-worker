@@ -86,7 +86,15 @@ describe('cloudflareWorker()', () => {
 		const devServer = list.find(
 			(plugin) => plugin.name === 'sveltekit-cloudflare-worker:dev-server'
 		);
-		expect(applies(devServer!, 'serve')).toBe(true);
+		// Vitest's own Vite server does not boot workerd.
+		expect(applies(devServer!, 'serve')).toBe(false);
+		const vitest = process.env.VITEST;
+		delete process.env.VITEST;
+		try {
+			expect(applies(devServer!, 'serve')).toBe(true);
+		} finally {
+			process.env.VITEST = vitest;
+		}
 		expect(applies(devServer!, 'serve', true)).toBe(false);
 		expect(applies(devServer!, 'build')).toBe(false);
 	});

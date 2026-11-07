@@ -256,6 +256,7 @@ browser ──> Vite (Node) ──> Miniflare / workerd: src/worker.ts fetch
   has not been loaded yet. Static imports are fine, because the Worker module is loaded before
   SvelteKit runs.
 - `cloudflare:workers` `exports` is not available to SvelteKit code in dev.
+- The dev runtime is disabled under Vitest (`process.env.VITEST`), so unit tests do not start workerd.
 
 ## Migrating from the SvelteKit 2 version (commit `c08908c`)
 

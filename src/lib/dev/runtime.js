@@ -56,6 +56,14 @@ const EXTENSIONS = ['.mjs', '.js', '.mts', '.ts', '.jsx', '.tsx', '.json', '.cjs
  */
 
 /**
+ * `vite dev` only: not `vite preview`, not `vite build`, and not Vitest (which starts a Vite dev
+ * server for unit tests that should not boot workerd).
+ * @type {Exclude<import('vite').Plugin['apply'], string | undefined>}
+ */
+const devOnly = (_config, env) =>
+	env.command === 'serve' && env.isPreview !== true && !process.env.VITEST;
+
+/**
  * Vite plugins that own the development runtime. They apply to `vite dev` only.
  * @param {DevRuntimeOptions} options
  * @returns {import('vite').Plugin[]}
@@ -67,7 +75,7 @@ export function devRuntimePlugins(options) {
 	/** @type {import('vite').Plugin} */
 	const environmentPlugin = {
 		name: 'sveltekit-cloudflare-worker:dev-environment',
-		apply: (_config, env) => env.command === 'serve' && env.isPreview !== true,
+		apply: devOnly,
 		config(_config, env) {
 			return {
 				environments: {
@@ -80,7 +88,7 @@ export function devRuntimePlugins(options) {
 	/** @type {import('vite').Plugin} */
 	const esmEnvPlugin = {
 		name: 'sveltekit-cloudflare-worker:dev-esm-env',
-		apply: (_config, env) => env.command === 'serve' && env.isPreview !== true,
+		apply: devOnly,
 		enforce: 'pre',
 		applyToEnvironment: (environment) => environment.name === WORKER_ENVIRONMENT,
 		resolveId(id) {
@@ -96,7 +104,7 @@ export function devRuntimePlugins(options) {
 	/** @type {import('vite').Plugin} */
 	const nodeBindingsPlugin = {
 		name: 'sveltekit-cloudflare-worker:dev-cloudflare-workers',
-		apply: (_config, env) => env.command === 'serve' && env.isPreview !== true,
+		apply: devOnly,
 		enforce: 'pre',
 		applyToEnvironment: (environment) => environment.name === 'ssr',
 		resolveId(id) {
@@ -107,7 +115,7 @@ export function devRuntimePlugins(options) {
 	/** @type {import('vite').Plugin} */
 	const serverPlugin = {
 		name: 'sveltekit-cloudflare-worker:dev-server',
-		apply: (_config, env) => env.command === 'serve' && env.isPreview !== true,
+		apply: devOnly,
 		async configureServer(server) {
 			const environment = server.environments[WORKER_ENVIRONMENT];
 			if (!(environment instanceof WorkerdDevEnvironment)) {

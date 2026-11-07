@@ -257,7 +257,7 @@ export function startWranglerDev(root: string, port: number) {
 function startServer(root: string, args: string[]): Server {
 	const child: ChildProcessByStdio<null, Readable, Readable> = spawn(process.execPath, args, {
 		cwd: root,
-		env: { ...process.env, CI: '1', FORCE_COLOR: '0', CLOUDFLARE_ENV: '' },
+		env: childEnv({ CLOUDFLARE_ENV: '' }),
 		stdio: ['ignore', 'pipe', 'pipe'],
 		detached: true
 	});
@@ -303,7 +303,7 @@ function runProcess(root: string, args: string[]) {
 	return new Promise<{ code: number | null; output: string }>((resolve, reject) => {
 		const child = spawn(process.execPath, args, {
 			cwd: root,
-			env: { ...process.env, CI: '1', FORCE_COLOR: '0' },
+			env: childEnv(),
 			stdio: ['ignore', 'pipe', 'pipe']
 		});
 		let output = '';
@@ -312,6 +312,15 @@ function runProcess(root: string, args: string[]) {
 		child.once('error', reject);
 		child.once('exit', (code) => resolve({ code, output }));
 	});
+}
+
+/** Environment for spawned Vite/Wrangler processes: not a Vitest worker. */
+function childEnv(extra: Record<string, string> = {}) {
+	const env: NodeJS.ProcessEnv = { ...process.env, CI: '1', FORCE_COLOR: '0', ...extra };
+	for (const key of Object.keys(env)) {
+		if (key === 'VITEST' || key.startsWith('VITEST_')) delete env[key];
+	}
+	return env;
 }
 
 export async function getAvailablePort() {
