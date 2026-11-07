@@ -4,10 +4,11 @@ import path from 'node:path';
 /**
  * @param {string} root
  * @param {(...args: unknown[]) => void} log
+ * @param {string} [configFile]
  * @returns {Promise<Record<string, unknown>>}
  */
-export async function readWranglerConfig(root, log) {
-	const configPath = findWranglerConfig(root);
+export async function readWranglerConfig(root, log, configFile) {
+	const configPath = configFile ? path.resolve(root, configFile) : findWranglerConfig(root);
 	if (!configPath) return {};
 
 	try {

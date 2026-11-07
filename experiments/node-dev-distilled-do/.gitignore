@@ -1,0 +1,5 @@
+node_modules
+/.sveltekit-cloudflare-worker
+/.distilled
+/.svelte-kit
+.DS_Store

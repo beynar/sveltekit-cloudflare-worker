@@ -27,7 +27,7 @@ interface Env {
 	ASSETS: Fetcher;
 }
 
-export const fetch: WorkerFetch<Env> = async (req, env, ctx, next) => {
+export const fetch: WorkerFetch<Env> = async (req, env) => {
 	const url = new URL(req.url);
 
 	// Durable Object demo — counter with RPC
@@ -110,7 +110,7 @@ export const fetch: WorkerFetch<Env> = async (req, env, ctx, next) => {
 	// Return nothing → falls through to SvelteKit
 };
 
-export const scheduled: WorkerScheduled<Env> = async (controller, env, ctx) => {
+export const scheduled: WorkerScheduled<Env> = async (controller) => {
 	console.log('cron job triggered', controller.cron);
 };
 
@@ -133,8 +133,6 @@ export class MyDurableObject extends DurableObject<Env> {
 }
 
 export class ChatRoom extends DurableObject<Env> {
-	sessions: Map<WebSocket, string> = new Map();
-
 	async fetch(request: Request): Promise<Response> {
 		const url = new URL(request.url);
 		const name = url.searchParams.get('name') ?? 'anonymous';
@@ -143,7 +141,7 @@ export class ChatRoom extends DurableObject<Env> {
 		const [client, server] = [pair[0], pair[1]];
 
 		this.ctx.acceptWebSocket(server);
-		this.sessions.set(server, name);
+		server.serializeAttachment(name);
 
 		this.broadcast({ type: 'system', text: `${name} joined` }, server);
 
@@ -151,8 +149,8 @@ export class ChatRoom extends DurableObject<Env> {
 	}
 
 	async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
-		const name = this.sessions.get(ws);
-		if (!name) return;
+		const name = ws.deserializeAttachment();
+		if (typeof name !== 'string') return;
 
 		const text = typeof message === 'string' ? message : new TextDecoder().decode(message);
 
@@ -167,15 +165,10 @@ export class ChatRoom extends DurableObject<Env> {
 	}
 
 	async webSocketClose(ws: WebSocket): Promise<void> {
-		const name = this.sessions.get(ws);
-		if (name) {
-			this.sessions.delete(ws);
+		const name = ws.deserializeAttachment();
+		if (typeof name === 'string') {
 			this.broadcast({ type: 'system', text: `${name} left` }, null);
 		}
-	}
-
-	async webSocketError(ws: WebSocket): Promise<void> {
-		this.sessions.delete(ws);
 	}
 
 	private broadcast(data: object, exclude: WebSocket | null): void {

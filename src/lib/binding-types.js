@@ -24,14 +24,22 @@ export {};
  *   workerFile: string,
  *   typesFile: string | false,
  *   classExports: string[],
+ *   configPath?: string,
  *   log: (...args: unknown[]) => void
  * }} options
  */
-export async function writeAppEnvTypes({ root, workerFile, typesFile, classExports, log }) {
+export async function writeAppEnvTypes({
+	root,
+	workerFile,
+	typesFile,
+	classExports,
+	configPath,
+	log
+}) {
 	if (typesFile === false) return;
 
 	const appTypesPath = path.resolve(root, typesFile);
-	const config = await readWranglerConfig(root, log);
+	const config = await readWranglerConfig(root, log, configPath);
 	const workerPath = path.resolve(root, workerFile);
 	const workerImportPath = existsSync(workerPath)
 		? toTypeImportPath(path.dirname(appTypesPath), workerPath)
@@ -49,11 +57,6 @@ export async function writeAppEnvTypes({ root, workerFile, typesFile, classExpor
 	}
 }
 
-/**
- * @param {string} root
- * @param {(...args: unknown[]) => void} log
- * @returns {Promise<Record<string, unknown>>}
- */
 /**
  * @param {Record<string, unknown>} config
  * @param {string | null} workerImportPath
@@ -86,8 +89,9 @@ function buildManagedBlock(config, workerImportPath, classExports) {
 	lines.push(
 		'\tnamespace App {',
 		'\t\tinterface Platform {',
-		'\t\t\t/** Runtime availability in local dev comes from the workerd SSR runtime. */',
+		'\t\t\t/** Runtime availability in local dev comes from the Distilled Node platform proxy. */',
 		'\t\t\tenv: Cloudflare.Env;',
+		"\t\t\tctx: import('sveltekit-cloudflare-worker').WorkerExecutionContext;",
 		'\t\t}'
 	);
 	lines.push('\t}', '}', MANAGED_END);
@@ -148,6 +152,7 @@ function collectBindings(config, workerImportPath, classExports) {
 	addObjectBinding(bindings, config.media, 'binding', 'MediaBinding');
 	addObjectBinding(bindings, config.version_metadata, 'binding', 'WorkerVersionMetadata');
 
+	addRequiredSecretBindings(bindings, config.secrets);
 	addVarBindings(bindings, config.vars);
 	addDataBlobBindings(bindings, config.text_blobs, 'string');
 	addDataBlobBindings(bindings, config.data_blobs, 'ArrayBuffer');
@@ -155,6 +160,18 @@ function collectBindings(config, workerImportPath, classExports) {
 	addWorkflowBindings(bindings, config, workerImportPath, classExports);
 
 	return dedupeBindings(bindings);
+}
+
+/**
+ * @param {{ name: string, type: string, comment?: string }[]} bindings
+ * @param {unknown} secrets
+ */
+function addRequiredSecretBindings(bindings, secrets) {
+	const required = getRecord(secrets)?.required;
+	if (!Array.isArray(required)) return;
+	for (const name of required) {
+		if (typeof name === 'string' && name.length > 0) bindings.push({ name, type: 'string' });
+	}
 }
 
 /**

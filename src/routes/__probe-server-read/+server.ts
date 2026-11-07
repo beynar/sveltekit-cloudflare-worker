@@ -1,5 +1,5 @@
 import { read } from '$app/server';
-import readableUrl from '$lib/demo-readable.txt?url';
+import readableUrl from '#lib/demo-readable.txt?url';
 import type { RequestHandler } from './$types.js';
 
 export const GET: RequestHandler = async () => {

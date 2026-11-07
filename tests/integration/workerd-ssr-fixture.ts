@@ -5,7 +5,12 @@ import net from 'node:net';
 import path from 'node:path';
 import type { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
-import { writeHmrEndpoint, writeWorkerdSsrFixtureFiles } from './workerd-ssr-files.js';
+import {
+	writeConnectHandler,
+	writeHmrEndpoint,
+	writeWorkerdSsrFixtureFiles,
+	writeWorkerVersion
+} from './workerd-ssr-files.js';
 
 export type DevServer = {
 	child: ChildProcessByStdio<null, Readable, Readable>;
@@ -13,9 +18,12 @@ export type DevServer = {
 	getOutput(): string;
 	hasExited(): boolean;
 	writeHmrEndpoint(version: string): Promise<void>;
+	writeConnectHandler(enabled: boolean): Promise<void>;
+	writeWorkerVersion(version: string): Promise<void>;
 };
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+const requestTimeoutMs = 5_000;
 const temporaryRoots: string[] = [];
 const devServers: DevServer[] = [];
 
@@ -27,38 +35,86 @@ export async function cleanupWorkerdSsrFixtures() {
 	);
 }
 
-export async function createWorkerdSsrFixture() {
+export async function createWorkerdSsrFixture(
+	options: {
+		basePath?: string;
+		connectPort?: number;
+		prerenderHome?: boolean;
+		productionOnlyBinding?: boolean;
+		wranglerConnectPort?: number;
+		useDefaultHooks?: boolean;
+		withConnect?: boolean;
+		withHooks?: boolean;
+	} = {}
+) {
 	const root = await mkdtemp(path.join(tmpdir(), 'sveltekit-cloudflare-worker-integration-'));
 	temporaryRoots.push(root);
 
 	await symlink(path.join(repoRoot, 'node_modules'), path.join(root, 'node_modules'), 'dir');
 	await mkdir(path.join(root, 'src/routes'), { recursive: true });
-	await mkdir(path.join(root, 'src/params'), { recursive: true });
 	await mkdir(path.join(root, 'static'), { recursive: true });
 
-	await writeWorkerdSsrFixtureFiles(root, repoRoot);
+	await writeWorkerdSsrFixtureFiles(root, repoRoot, options);
 
 	return root;
 }
 
+export async function buildWorkerdSsrFixture(root: string) {
+	const { code, signal, output } = await runProcess(root, [
+		path.join(root, 'node_modules/vite/bin/vite.js'),
+		'build'
+	]);
+
+	if (code !== 0) {
+		throw new Error(`Fixture build failed with code ${code} and signal ${signal}.\n${output}`);
+	}
+	return output;
+}
+
 export function startDevServer(root: string, port: number): DevServer {
-	const child = spawn(
-		process.execPath,
-		[
-			path.join(root, 'node_modules/vite/bin/vite.js'),
-			'dev',
-			'--host',
-			'127.0.0.1',
-			'--port',
-			String(port),
-			'--strictPort'
-		],
-		{
-			cwd: root,
-			env: { ...process.env, CI: '1', FORCE_COLOR: '0' },
-			stdio: ['ignore', 'pipe', 'pipe']
-		}
-	);
+	return startServer(root, [
+		path.join(root, 'node_modules/vite/bin/vite.js'),
+		'dev',
+		'--host',
+		'127.0.0.1',
+		'--port',
+		String(port),
+		'--strictPort'
+	]);
+}
+
+export function startPreviewServer(root: string, port: number): DevServer {
+	return startServer(root, [
+		path.join(root, 'node_modules/vite/bin/vite.js'),
+		'preview',
+		'--host',
+		'127.0.0.1',
+		'--port',
+		String(port),
+		'--strictPort'
+	]);
+}
+
+export function startWranglerServer(root: string, port: number): DevServer {
+	return startServer(root, [
+		path.join(root, 'node_modules/wrangler/bin/wrangler.js'),
+		'dev',
+		'--local',
+		'--ip',
+		'127.0.0.1',
+		'--port',
+		String(port),
+		'--test-scheduled',
+		'--show-interactive-dev-session=false'
+	]);
+}
+
+function startServer(root: string, args: string[]): DevServer {
+	const child = spawn(process.execPath, args, {
+		cwd: root,
+		env: { ...process.env, CI: '1', FORCE_COLOR: '0' },
+		stdio: ['ignore', 'pipe', 'pipe']
+	});
 	let output = '';
 	let exited = false;
 	const exit = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
@@ -79,16 +135,57 @@ export function startDevServer(root: string, port: number): DevServer {
 		exit,
 		getOutput: () => output,
 		hasExited: () => exited,
-		writeHmrEndpoint: (version: string) => writeHmrEndpoint(root, version)
+		writeHmrEndpoint: (version: string) => writeHmrEndpoint(root, version),
+		writeConnectHandler: (enabled: boolean) => writeConnectHandler(root, enabled),
+		writeWorkerVersion: (version: string) => writeWorkerVersion(root, version)
 	};
 	devServers.push(server);
 	return server;
 }
 
+function runProcess(root: string, args: string[]) {
+	return new Promise<{
+		code: number | null;
+		signal: NodeJS.Signals | null;
+		output: string;
+	}>((resolve, reject) => {
+		const child = spawn(process.execPath, args, {
+			cwd: root,
+			env: { ...process.env, CI: '1', FORCE_COLOR: '0' },
+			stdio: ['ignore', 'pipe', 'pipe']
+		});
+		let output = '';
+		child.stdout.on('data', (chunk) => {
+			output += chunk.toString();
+		});
+		child.stderr.on('data', (chunk) => {
+			output += chunk.toString();
+		});
+		child.once('error', reject);
+		child.once('exit', (code, signal) => resolve({ code, signal, output }));
+	});
+}
+
 export async function waitForResponse(server: DevServer, url: string) {
 	return waitFor(server, async () => {
-		const response = await fetch(url);
-		if (!response.ok) throw new Error(`${url} returned ${response.status}: ${await response.text()}`);
+		const response = await fetch(url, { signal: AbortSignal.timeout(requestTimeoutMs) });
+		if (!response.ok)
+			throw new Error(`${url} returned ${response.status}: ${await response.text()}`);
+		return response;
+	});
+}
+
+export async function waitForResponseWhere(
+	server: DevServer,
+	url: string,
+	predicate: (response: Response) => boolean
+) {
+	return waitFor(server, async () => {
+		const response = await fetch(url, { signal: AbortSignal.timeout(requestTimeoutMs) });
+		if (!response.ok) {
+			throw new Error(`${url} returned ${response.status}: ${await response.text()}`);
+		}
+		if (!predicate(response)) throw new Error(`${url} returned unexpected response headers`);
 		return response;
 	});
 }
@@ -106,7 +203,7 @@ export async function waitForJson<T>(
 }
 
 export async function readJson<T>(url: string) {
-	const response = await fetch(url);
+	const response = await fetch(url, { signal: AbortSignal.timeout(requestTimeoutMs) });
 	if (!response.ok) throw new Error(`${url} returned ${response.status}: ${await response.text()}`);
 	return (await response.json()) as T;
 }
@@ -127,7 +224,7 @@ export async function getAvailablePort() {
 	return address.port;
 }
 
-async function stopDevServer(server: DevServer) {
+export async function stopDevServer(server: DevServer) {
 	if (server.hasExited()) return;
 
 	server.child.kill('SIGTERM');

@@ -108,8 +108,7 @@
 
 	// --- WebSocket chat ---
 	type ChatMessage =
-		| { type: 'message'; name: string; text: string }
-		| { type: 'system'; text: string };
+		{ type: 'message'; name: string; text: string } | { type: 'system'; text: string };
 
 	let chatMessages = $state<ChatMessage[]>([]);
 	let chatInput = $state('');
@@ -134,7 +133,9 @@
 				const msg = JSON.parse(e.data) as ChatMessage;
 				chatMessages = [...chatMessages, msg];
 				scrollChat();
-			} catch {}
+			} catch (error) {
+				console.error('Could not parse chat message', error);
+			}
 		};
 
 		ws.onclose = () => {
@@ -207,7 +208,9 @@
 							workflowRunning = false;
 						}
 					}
-				} catch {}
+				} catch (error) {
+					console.error('Could not parse workflow message', error);
+				}
 			};
 			ws.onclose = () => {
 				workflowWs = null;
@@ -433,7 +436,7 @@ export class ChatRoom extends DurableObject {
 					bind:this={chatEl}
 					class="mb-3 h-64 space-y-1 overflow-y-auto rounded border border-zinc-800 bg-zinc-950 p-3"
 				>
-					{#each chatMessages as msg}
+					{#each chatMessages as msg, index (index)}
 						{#if msg.type === 'system'}
 							<div class="text-xs text-zinc-600 italic">{msg.text}</div>
 						{:else}
@@ -632,7 +635,7 @@ export class ChatRoom extends DurableObject {
 
 			{#if Object.keys(featureProbeResults).length > 0}
 				<div class="mt-4 grid gap-2 sm:grid-cols-3">
-					{#each Object.entries(featureProbeResults) as [name, result]}
+					{#each Object.entries(featureProbeResults) as [name, result] (name)}
 						<div
 							class="rounded border px-3 py-2 text-sm {result.passed
 								? 'border-green-800 bg-green-950 text-green-300'
@@ -667,6 +670,7 @@ export class ChatRoom extends DurableObject {
 					</p>
 					<pre
 						class="sh overflow-x-auto rounded border border-zinc-800 bg-zinc-950 p-4 text-sm leading-relaxed"><code
+							><!-- eslint-disable-next-line svelte/no-at-html-tags -->
 							>{@html honoCode}</code
 						></pre>
 				</div>
@@ -679,6 +683,7 @@ export class ChatRoom extends DurableObject {
 					</p>
 					<pre
 						class="sh overflow-x-auto rounded border border-zinc-800 bg-zinc-950 p-4 text-sm leading-relaxed"><code
+							><!-- eslint-disable-next-line svelte/no-at-html-tags -->
 							>{@html transformCode}</code
 						></pre>
 				</div>
@@ -691,6 +696,7 @@ export class ChatRoom extends DurableObject {
 					<p class="mb-3 text-sm text-zinc-500">The code powering this demo page.</p>
 					<pre
 						class="sh overflow-x-auto rounded border border-zinc-800 bg-zinc-950 p-4 text-sm leading-relaxed"><code
+							><!-- eslint-disable-next-line svelte/no-at-html-tags -->
 							>{@html doCode}</code
 						></pre>
 				</div>

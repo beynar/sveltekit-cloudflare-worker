@@ -1,0 +1,8 @@
+node_modules
+/.distilled
+/.distilled-build
+/.svelte-kit
+/dist
+/.wrangler
+/.wrangler-dry-run
+.DS_Store

@@ -1,0 +1,21 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "distilled-sveltekit-do",
+	"main": ".distilled-build/index.js",
+	"compatibility_date": "2026-07-11",
+	"compatibility_flags": ["nodejs_compat"],
+	"assets": {
+		"binding": "ASSETS",
+		"directory": ".svelte-kit/cloudflare",
+		"run_worker_first": true
+	},
+	"durable_objects": {
+		"bindings": [{ "name": "COUNTER", "class_name": "Counter" }]
+	},
+	"exports": {
+		"Counter": {
+			"type": "durable-object",
+			"storage": "sqlite"
+		}
+	}
+}

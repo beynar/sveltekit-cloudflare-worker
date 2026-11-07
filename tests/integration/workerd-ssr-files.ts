@@ -1,11 +1,24 @@
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-export async function writeWorkerdSsrFixtureFiles(root: string, repoRoot: string) {
-	await writePackageFiles(root, repoRoot);
-	await writeWorker(root);
-	await writeRoutes(root);
+export async function writeWorkerdSsrFixtureFiles(
+	root: string,
+	repoRoot: string,
+	options: {
+		basePath?: string;
+		connectPort?: number;
+		prerenderHome?: boolean;
+		productionOnlyBinding?: boolean;
+		wranglerConnectPort?: number;
+		useDefaultHooks?: boolean;
+		withConnect?: boolean;
+		withHooks?: boolean;
+	} = {}
+) {
+	await writePackageFiles(root, repoRoot, options);
+	await writeWorker(root, options.withConnect ?? true);
+	await writeRoutes(root, options.prerenderHome ?? false);
 }
 
 export async function writeHmrEndpoint(root: string, version: string) {
@@ -18,29 +31,89 @@ export const GET: RequestHandler = () => Response.json({ version: ${JSON.stringi
 	);
 }
 
-async function writePackageFiles(root: string, repoRoot: string) {
-	await writeFile(
-		path.join(root, 'package.json'),
-		JSON.stringify({ type: 'module', private: true }, null, '\t')
+export async function writeWorkerVersion(root: string, version: string) {
+	const workerPath = path.join(root, 'src/worker.ts');
+	const source = await readFile(workerPath, 'utf8');
+	const updated = source.replace(
+		/const workerVersion = '[^']+';/,
+		`const workerVersion = ${JSON.stringify(version)};`
 	);
-	await writeFile(
-		path.join(root, 'svelte.config.js'),
-		`import adapter from '@sveltejs/adapter-cloudflare';
+	if (updated === source) throw new Error('Could not find the Worker HMR version marker.');
+	await writeFile(workerPath, updated);
+}
 
-export default {
-\tcompilerOptions: {
-\t\texperimental: {
-\t\t\tasync: true
-\t\t}
-\t},
-\tkit: {
-\t\tadapter: adapter(),
-\t\texperimental: {
-\t\t\tremoteFunctions: true
-\t\t}
-\t}
+export async function writeConnectHandler(root: string, enabled: boolean) {
+	const workerPath = path.join(root, 'src/worker.ts');
+	const source = await readFile(workerPath, 'utf8');
+	const updated = source.replace(
+		/\/\/ CONNECT_HANDLER_START[\s\S]*?\/\/ CONNECT_HANDLER_END/,
+		`// CONNECT_HANDLER_START\n${enabled ? connectHandlerSource : ''}// CONNECT_HANDLER_END`
+	);
+	if (updated === source) {
+		throw new Error(`The Worker connect handler is already ${enabled ? 'enabled' : 'disabled'}.`);
+	}
+	await writeFile(workerPath, updated);
+}
+
+export async function writeApplicationHooks(
+	root: string,
+	enabled: boolean,
+	hooksFile = 'src/application-hooks.server.ts'
+) {
+	const hooksPath = path.join(root, hooksFile);
+	if (!enabled) {
+		await rm(hooksPath, { force: true });
+		return;
+	}
+	await writeFile(
+		hooksPath,
+		`import type { Handle } from '@sveltejs/kit/hooks';
+
+export const handle: Handle = async ({ event, resolve }) => {
+\tconst response = await resolve(event);
+\tconst headers = new Headers(response.headers);
+\theaders.set('x-application-hook', 'true');
+\treturn new Response(response.body, { status: response.status, headers });
 };
 `
+	);
+}
+
+async function writePackageFiles(
+	root: string,
+	repoRoot: string,
+	{
+		basePath = '',
+		connectPort = 0,
+		productionOnlyBinding = false,
+		wranglerConnectPort,
+		useDefaultHooks = false,
+		withHooks = true
+	}: {
+		basePath?: string;
+		connectPort?: number;
+		productionOnlyBinding?: boolean;
+		wranglerConnectPort?: number;
+		useDefaultHooks?: boolean;
+		withHooks?: boolean;
+	}
+) {
+	const adapterTcpOptions =
+		wranglerConnectPort === undefined ? `, connectPort: ${connectPort}` : '';
+	const hooksConfig = useDefaultHooks
+		? ''
+		: "\t\tfiles: { hooks: { server: 'src/application-hooks.server.ts' } },\n";
+	await writeFile(
+		path.join(root, 'package.json'),
+		JSON.stringify(
+			{
+				type: 'module',
+				private: true,
+				imports: { '#lib': './src/lib', '#lib/*': './src/lib/*' }
+			},
+			null,
+			'\t'
+		)
 	);
 	await writeFile(
 		path.join(root, 'vite.config.ts'),
@@ -51,11 +124,19 @@ import { cloudflareWorker } from ${JSON.stringify(
 		)};
 
 export default defineConfig({
+\tcacheDir: '.vite-cache',
 \tplugins: [
-\t\tsveltekit(),
-\t\tcloudflareWorker({
-\t\t\ttypesFile: false
-\t\t})
+\t\tsveltekit(cloudflareWorker({
+${hooksConfig}		\tpaths: { base: ${JSON.stringify(basePath)} },
+\t\t\tcompilerOptions: {
+\t\t\t\texperimental: {
+\t\t\t\t\tasync: true
+\t\t\t\t}
+\t\t\t},
+\t\t\texperimental: {
+\t\t\t\tremoteFunctions: true
+\t\t\t}
+\t\t}, { typesFile: false${adapterTcpOptions}, verbose: ${connectPort !== 0 || wranglerConnectPort !== undefined} }))
 \t]
 });
 `
@@ -68,11 +149,31 @@ export default defineConfig({
 				main: '.svelte-kit/cloudflare/_worker.js',
 				compatibility_date: '2025-01-01',
 				compatibility_flags: ['nodejs_compat'],
-				assets: { binding: 'ASSETS', directory: '.svelte-kit/cloudflare' },
+				...(wranglerConnectPort === undefined
+					? {}
+					: {
+							connect: [{ protocol: 'tcp', address: '127.0.0.1', port: wranglerConnectPort }]
+						}),
+				assets: {
+					binding: 'ASSETS',
+					directory: '.svelte-kit/cloudflare',
+					run_worker_first: true
+				},
 				migrations: [{ tag: 'v1', new_sqlite_classes: ['CounterDurableObject'] }],
 				durable_objects: {
 					bindings: [{ name: 'COUNTER_DO', class_name: 'CounterDurableObject' }]
 				},
+				workflows: [
+					{
+						name: 'fixture-workflow',
+						binding: 'FIXTURE_WORKFLOW',
+						class_name: 'FixtureWorkflow'
+					}
+				],
+				triggers: { crons: ['* * * * *'] },
+				...(productionOnlyBinding
+					? { vectorize: [{ binding: 'VECTOR', index_name: 'documents' }] }
+					: {}),
 				vars: { FIXTURE_VALUE: 'available' }
 			},
 			null,
@@ -83,28 +184,128 @@ export default defineConfig({
 		path.join(root, 'src/app.html'),
 		'<!doctype html><html><head>%sveltekit.head%</head><body><div style="display: contents">%sveltekit.body%</div></body></html>'
 	);
-	await writeFile(path.join(root, 'src/hooks.server.ts'), 'export {};\n');
+	await writeFile(
+		path.join(root, 'src/instrumentation.server.ts'),
+		"(globalThis as typeof globalThis & { __fixtureInstrumentation?: string }).__fixtureInstrumentation = 'loaded';\n"
+	);
+	await mkdir(path.join(root, 'src/lib'), { recursive: true });
+	await writeFile(
+		path.join(root, 'src/lib/worker-alias.ts'),
+		"export const aliasValue = 'alias';\n"
+	);
+	await writeFile(
+		path.join(root, 'src/service-worker.ts'),
+		"self.addEventListener('install', () => undefined);\n"
+	);
+	if (withHooks) {
+		await writeApplicationHooks(
+			root,
+			true,
+			useDefaultHooks ? 'src/hooks.server.ts' : 'src/application-hooks.server.ts'
+		);
+	}
 	await writeFile(path.join(root, 'static/fixture.txt'), 'asset fixture');
 }
 
-async function writeWorker(root: string) {
+async function writeWorker(root: string, withConnect: boolean) {
 	await writeFile(
 		path.join(root, 'src/worker.ts'),
-		`import { DurableObject } from 'cloudflare:workers';
+		`import { Buffer } from 'node:buffer';
+import { DurableObject, WorkflowEntrypoint } from 'cloudflare:workers';
+import { aliasValue } from '#lib/worker-alias.js';
 
 type Env = {
 \tCOUNTER_DO: DurableObjectNamespace<CounterDurableObject>;
+\tFIXTURE_WORKFLOW: Workflow<{ source: string }>;
 \tASSETS: Fetcher;
 };
 
-export const fetch = async (request: Request, env: Env) => {
-\tconst url = new URL(request.url);
-\tif (url.pathname !== '/api/do/increment') return;
+const workerVersion = 'one';
+export const internalHelper = 42;
 
-\tconst id = env.COUNTER_DO.idFromName('worker-realm');
-\tconst count = await env.COUNTER_DO.get(id).increment();
-\treturn Response.json({ count });
+export const fetch = async (
+\trequest: Request,
+\tenv: Env,
+\t_ctx: ExecutionContext,
+\tnext: () => Promise<Response>
+) => {
+\tconst url = new URL(request.url);
+\tif (url.pathname === '/api/worker-version') {
+\t\treturn Response.json({ version: workerVersion });
+\t}
+
+\tif (url.pathname === '/api/context-brand') {
+\t\t_ctx.passThroughOnException();
+\t\treturn new Response('context-ok');
+\t}
+
+\tif (url.pathname === '/api/module-resolution') {
+\t\treturn Response.json({ aliasValue, bytes: Buffer.from('ok').length, internalHelper });
+\t}
+
+\tif (url.pathname === '/api/runtime-env') {
+\t\t(globalThis as typeof globalThis & { __fixtureWorkerEnv?: Env }).__fixtureWorkerEnv = env;
+\t\treturn next();
+\t}
+
+\tif (url.pathname === '/api/instrumentation') {
+\t\tconst value = (globalThis as typeof globalThis & { __fixtureInstrumentation?: string })
+\t\t\t.__fixtureInstrumentation;
+\t\treturn Response.json({ value });
+\t}
+
+\tif (url.pathname === '/api/do/increment') {
+\t\tconst id = env.COUNTER_DO.idFromName(url.searchParams.get('name') ?? 'shared-realm');
+\t\tconst count = await env.COUNTER_DO.get(id).increment();
+\t\treturn Response.json({ count });
+\t}
+
+\tif (url.pathname === '/api/do/socket') {
+\t\treturn env.COUNTER_DO.getByName(url.searchParams.get('name') ?? 'shared-realm').fetch(request);
+\t}
+
+\tif (url.pathname === '/api/do/broadcast') {
+\t\tconst stub = env.COUNTER_DO.getByName(url.searchParams.get('name') ?? 'shared-realm');
+\t\tconst connections = await stub.broadcast(url.searchParams.get('message') ?? 'broadcast');
+\t\treturn Response.json({ connections });
+\t}
+
+\tif (url.pathname === '/__probe-middleware-chain') {
+\t\tconst name = url.searchParams.get('name') ?? 'middleware-chain';
+\t\tconst stub = env.COUNTER_DO.getByName(name);
+\t\tconst before = await stub.increment();
+\t\tconst response = await next();
+\t\tconst kit = (await response.json()) as { kit: number };
+\t\tconst after = await stub.increment();
+\t\treturn Response.json({ before, kit: kit.kit, after });
+\t}
+
+\tif (url.pathname === '/api/workflow/start') {
+\t\tconst instance = await env.FIXTURE_WORKFLOW.create({
+\t\t\tid: crypto.randomUUID(),
+\t\t\tparams: { source: 'worker' }
+\t\t});
+\t\treturn Response.json({ id: instance.id });
+\t}
+
+\tif (url.pathname.startsWith('/api/workflow/status/')) {
+\t\tconst id = url.pathname.slice('/api/workflow/status/'.length);
+\t\treturn Response.json(await (await env.FIXTURE_WORKFLOW.get(id)).status());
+\t}
+
+\tif (url.pathname === '/api/scheduled/count') {
+\t\tconst id = env.COUNTER_DO.idFromName('scheduled');
+\t\treturn Response.json({ count: await env.COUNTER_DO.get(id).getCount() });
+\t}
 };
+
+export const scheduled = async (_controller: ScheduledController, env: Env) => {
+\tconst id = env.COUNTER_DO.idFromName('scheduled');
+\tawait env.COUNTER_DO.get(id).increment();
+};
+
+// CONNECT_HANDLER_START
+${withConnect ? connectHandlerSource : ''}// CONNECT_HANDLER_END
 
 export class CounterDurableObject extends DurableObject<Env> {
 \tasync increment() {
@@ -112,12 +313,70 @@ export class CounterDurableObject extends DurableObject<Env> {
 \t\tawait this.ctx.storage.put('count', count);
 \t\treturn count;
 \t}
+
+\tasync getCount() {
+\t\treturn (await this.ctx.storage.get<number>('count')) ?? 0;
+\t}
+
+\tasync fetch(request: Request) {
+\t\tif (request.headers.get('upgrade')?.toLowerCase() !== 'websocket') {
+\t\t\treturn new Response('Expected a WebSocket upgrade.', { status: 426 });
+\t\t}
+\t\tconst [client, server] = Object.values(new WebSocketPair());
+\t\tthis.ctx.acceptWebSocket(server);
+\t\tif (new URL(request.url).searchParams.get('mode') === 'hmr') {
+\t\t\tserver.send(JSON.stringify({ version: workerVersion }));
+\t\t}
+\t\treturn new Response(null, { status: 101, webSocket: client });
+\t}
+
+\tasync broadcast(message: string) {
+\t\tconst sockets = this.ctx.getWebSockets();
+\t\tfor (const socket of sockets) {
+\t\t\tsocket.send(JSON.stringify({ broadcast: message, version: workerVersion }));
+\t\t}
+\t\treturn sockets.length;
+\t}
+
+\tasync connect(socket: Socket) {
+\t\tconst count = await this.increment();
+\t\tconst writer = socket.writable.getWriter();
+\t\tawait writer.write(new TextEncoder().encode(\`durable-object:\${count}\\n\`));
+\t\twriter.releaseLock();
+\t\tawait socket.readable.pipeTo(socket.writable);
+\t}
+
+\tasync webSocketMessage(socket: WebSocket, message: string | ArrayBuffer) {
+\t\tconst count = await this.increment();
+\t\tsocket.send(JSON.stringify({ count, message: String(message) }));
+\t}
+}
+
+export class FixtureWorkflow extends WorkflowEntrypoint<Env, { source: string }> {
+\tasync run(event: Readonly<WorkflowEvent<{ source: string }>>, step: WorkflowStep) {
+\t\treturn step.do('increment durable object', async () => {
+\t\t\tconst id = this.env.COUNTER_DO.idFromName('workflow-realm');
+\t\t\tconst count = await this.env.COUNTER_DO.get(id).increment();
+\t\t\treturn { source: event.payload.source, count };
+\t\t});
+\t}
 }
 `
 	);
 }
 
-async function writeRoutes(root: string) {
+const connectHandlerSource = `export const connect = async (socket: Socket, env: Env) => {
+\tconst durableObjectSocket = env.COUNTER_DO.getByName('tcp-connect').connect('tcp.local:8788');
+\tawait durableObjectSocket.opened;
+\tawait Promise.all([
+\t\tsocket.readable.pipeTo(durableObjectSocket.writable),
+\t\tdurableObjectSocket.readable.pipeTo(socket.writable)
+\t]);
+};
+
+`;
+
+async function writeRoutes(root: string, prerenderHome: boolean) {
 	await writeFile(
 		path.join(root, 'src/routes/+layout.svelte'),
 		`<script>
@@ -153,18 +412,26 @@ async function writeRoutes(root: string) {
 	);
 	await writeFile(
 		path.join(root, 'src/routes/+page.ts'),
-		`export const load = async () => {
-\tawait import('$lib/dynamic.css');
+		`${prerenderHome ? 'export const prerender = true;\n\n' : ''}export const load = async () => {
+\tawait import('#lib/dynamic.css');
 \treturn {};
 };
 `
 	);
 	await writeProbeRoute(root);
+	await writeMiddlewareChainProbeRoute(root);
+	await writeRuntimeEnvProbeRoute(root);
 	await writeRemoteProbeRoute(root);
 	await writeServerReadProbeRoute(root);
+	await writeWorkflowProbeRoute(root);
 	await writeFile(
-		path.join(root, 'src/params/digits.ts'),
-		'export const match = (param: string) => /^\\d+$/.test(param);\n'
+		path.join(root, 'src/params.ts'),
+		`import { defineParams } from '@sveltejs/kit/params';
+
+export const params = defineParams({
+\tdigits: (param) => (/^\\d+$/.test(param) ? param : undefined)
+});
+`
 	);
 	await mkdir(path.join(root, 'src/routes/[id=digits]'), { recursive: true });
 	await writeFile(
@@ -189,21 +456,78 @@ if (typeof window === 'undefined') {
 	await writeHmrEndpoint(root, 'one');
 }
 
+async function writeMiddlewareChainProbeRoute(root: string) {
+	await mkdir(path.join(root, 'src/routes/__probe-middleware-chain'), { recursive: true });
+	await writeFile(
+		path.join(root, 'src/routes/__probe-middleware-chain/+server.ts'),
+		`import type { RequestHandler } from './$types.js';
+
+export const GET: RequestHandler = async ({ platform, url }) => {
+\tconst name = url.searchParams.get('name') ?? 'middleware-chain';
+\tconst kit = await platform!.env.COUNTER_DO.getByName(name).increment();
+\treturn Response.json({ kit });
+};
+`
+	);
+}
+
+async function writeWorkflowProbeRoute(root: string) {
+	await mkdir(path.join(root, 'src/routes/__probe-workflow'), { recursive: true });
+	await writeFile(
+		path.join(root, 'src/routes/__probe-workflow/+server.ts'),
+		`import type { RequestHandler } from './$types.js';
+
+export const POST: RequestHandler = async ({ platform }) => {
+\tconst instance = await platform!.env.FIXTURE_WORKFLOW.create({
+\t\tid: crypto.randomUUID(),
+\t\tparams: { source: 'sveltekit' }
+\t});
+\treturn Response.json({ id: instance.id });
+};
+
+export const GET: RequestHandler = async ({ platform, url }) => {
+\tconst id = url.searchParams.get('id');
+\tif (!id) return new Response('Missing workflow id', { status: 400 });
+\treturn Response.json(await (await platform!.env.FIXTURE_WORKFLOW.get(id)).status());
+};
+`
+	);
+}
+
 async function writeProbeRoute(root: string) {
 	await mkdir(path.join(root, 'src/routes/__probe-sveltekit-bindings'), { recursive: true });
 	await writeFile(
 		path.join(root, 'src/routes/__probe-sveltekit-bindings/+server.ts'),
 		`import type { RequestHandler } from './$types.js';
 
-export const GET: RequestHandler = async ({ platform }) => {
+export const GET: RequestHandler = async ({ platform, url }) => {
 \tconst env = platform?.env;
 \tif (!env?.COUNTER_DO) {
 \t\treturn Response.json({ ok: false, keys: Object.keys(env ?? {}).sort() }, { status: 500 });
 \t}
 
-\tconst id = env.COUNTER_DO.idFromName('sveltekit-realm');
+\tconst id = env.COUNTER_DO.idFromName(url.searchParams.get('name') ?? 'shared-realm');
 \tconst count = await env.COUNTER_DO.get(id).increment();
-\treturn Response.json({ ok: true, count, keys: Object.keys(env).sort() });
+\treturn Response.json({
+\t\tok: true,
+\t\tcount,
+\t\tkeys: Object.keys(env).sort()
+\t});
+};
+`
+	);
+}
+
+async function writeRuntimeEnvProbeRoute(root: string) {
+	await mkdir(path.join(root, 'src/routes/api/runtime-env'), { recursive: true });
+	await writeFile(
+		path.join(root, 'src/routes/api/runtime-env/+server.ts'),
+		`import type { RequestHandler } from './$types.js';
+
+export const GET: RequestHandler = ({ platform }) => {
+\tconst workerEnv = (globalThis as typeof globalThis & { __fixtureWorkerEnv?: object })
+\t\t.__fixtureWorkerEnv;
+\treturn Response.json({ sameEnv: workerEnv === platform?.env });
 };
 `
 	);
@@ -217,7 +541,7 @@ async function writeServerReadProbeRoute(root: string) {
 		path.join(root, 'src/routes/__probe-server-read/+server.ts'),
 		`import { read } from '$app/server';
 import type { RequestHandler } from './$types.js';
-import readableUrl from '$lib/readable.txt?url';
+import readableUrl from '#lib/readable.txt?url';
 
 export const GET: RequestHandler = async () => {
 \tconst response = read(readableUrl);
@@ -232,7 +556,6 @@ export const GET: RequestHandler = async () => {
 }
 
 async function writeRemoteProbeRoute(root: string) {
-	const remoteId = `${hash('src/lib/fixture.remote.ts')}/getFixtureValue`;
 	await mkdir(path.join(root, 'src/lib'), { recursive: true });
 	await writeFile(
 		path.join(root, 'src/lib/fixture.remote.ts'),
@@ -255,22 +578,12 @@ export const getFixtureValue = query(() => {
 	await mkdir(path.join(root, 'src/routes/__probe-remotes'), { recursive: true });
 	await writeFile(
 		path.join(root, 'src/routes/__probe-remotes/+server.ts'),
-		`import type { RequestHandler } from './$types.js';
+		`import { getFixtureValue } from '#lib/fixture.remote.js';
+import type { RequestHandler } from './$types.js';
 
-export const GET: RequestHandler = async ({ fetch }) => {
-\tconst response = await fetch('/_app/remote/${remoteId}?payload=');
-\tconst body = await response.json();
-\treturn Response.json({ status: response.status, body });
+export const GET: RequestHandler = async () => {
+\treturn Response.json({ body: await getFixtureValue() });
 };
 `
 	);
-}
-
-function hash(value: string) {
-	let result = 5381;
-	let index = value.length;
-
-	while (index) result = (result * 33) ^ value.charCodeAt(--index);
-
-	return (result >>> 0).toString(36);
 }

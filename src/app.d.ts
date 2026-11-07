@@ -34,8 +34,9 @@ declare global {
 	interface Env extends Cloudflare.Env {}
 	namespace App {
 		interface Platform {
-			/** Runtime availability in local dev comes from the workerd SSR runtime. */
+			/** Runtime availability in local dev comes from the Distilled Node platform proxy. */
 			env: Cloudflare.Env;
+			ctx: import('sveltekit-cloudflare-worker').WorkerExecutionContext;
 		}
 	}
 }
