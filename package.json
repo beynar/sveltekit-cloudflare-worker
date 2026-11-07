@@ -18,7 +18,7 @@
 		"test:unit": "vitest --config vitest.config.ts",
 		"test:integration": "vitest --config vitest.integration.config.ts --run",
 		"test": "npm run test:unit -- --run",
-		"prepack": "publint"
+		"publint": "publint"
 	},
 	"files": [
 		"src/lib/**/*.js",
