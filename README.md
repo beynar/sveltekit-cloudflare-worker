@@ -1,455 +1,282 @@
 # sveltekit-cloudflare-worker
 
-Add a Cloudflare Worker entry to a SvelteKit application without giving up SvelteKit's native
-development server and HMR.
+Put a Cloudflare Worker entry, `src/worker.ts`, in front of a SvelteKit 3 app deployed with
+`@sveltejs/adapter-cloudflare` 8.
 
-Define your Cloudflare code in `src/worker.ts`. Its `fetch` handler can run before and after
-SvelteKit, while exported Durable Objects, Workflows, Worker entrypoints, and other handlers become
-part of the deployed Worker. SvelteKit server code and `src/worker.ts` share the bindings declared
-in `wrangler.jsonc`.
-
-## Features
-
-- **Worker middleware around SvelteKit** — run `src/worker.ts` before SvelteKit, call `next()`, then
-  transform the response after SvelteKit.
-- **One Durable Object namespace everywhere** — Worker middleware, SvelteKit routes, and WebSockets
-  can address the same named object and persisted state.
-- **Durable Object WebSockets** — accept browser WebSocket connections locally and in production
-  through the same Worker entry.
-- **Inbound TCP handlers** — export `connect(socket)` from `src/worker.ts` and route the live socket
-  to a Durable Object in the same local workerd and production Worker.
-- **Native SvelteKit development** — keep SvelteKit's Node server, routing, SSR, HMR, hooks, remotes,
-  and server assets.
-- **Automatic Cloudflare bindings** — derive local runtime bindings and TypeScript declarations
-  from `wrangler.jsonc`.
-- **Cloudflare entrypoint exports** — export Durable Objects, Workflows, Worker entrypoints,
-  scheduled handlers, queues, email handlers, and tail handlers from `src/worker.ts`.
-- **Persistent local state** — retain Durable Object and storage state across development-server
-  restarts.
-- **One production Worker** — compose SvelteKit and `src/worker.ts` into one deployed Cloudflare
-  Worker and module graph.
-- **Bundled integration runtime** — install the package without separately managing Distilled,
-  Effect, esbuild, or Cloudflare Worker types.
+- **Fetch middleware around SvelteKit.** Return a `Response` to answer a request, return nothing
+  to fall through to SvelteKit, or call `next()` to run SvelteKit and change its response.
+- **Everything else a Worker can export.** Durable Objects (SQLite or KV storage), Workflows,
+  `WorkerEntrypoint` classes, `queue`, `scheduled`, `email`, `tail` and the other handlers end up
+  in the one deployed Worker.
+- **`vite dev` runs the Worker in workerd, with HMR.** Editing `src/worker.ts` or anything it imports
+  updates the running Worker without a restart. Durable Objects pick up the new class and keep
+  their storage.
+- **One set of bindings.** SvelteKit server code reads `import { env } from 'cloudflare:workers'`
+  and reaches the same Durable Objects, D1, R2, KV and queues as the Worker, in dev and in
+  production.
+- **State shared with Wrangler.** Dev data lives in `.wrangler/state/v3`, so
+  `wrangler d1 migrations apply --local` and `wrangler dev` see the same databases and objects.
 
 ## Requirements
 
-- SvelteKit `>=3.0.0-next.25 <4`
-- `@sveltejs/adapter-cloudflare >=8.0.0-next.6 <9`
-- Vite `^8.2.0`
-- Wrangler `^4.125.0`
-
-These SvelteKit and adapter versions are prereleases.
+- `@sveltejs/kit` `^3.1.0` (configured in `vite.config.ts`; SvelteKit 3 has no `svelte.config.js`)
+- `@sveltejs/adapter-cloudflare` `^8.0.2`
+- `vite` `^8.0.12`, `wrangler` `^4.125.0`, Node.js `>=20.19`
 
 ## Install
 
-```bash
-pnpm add -D sveltekit-cloudflare-worker @sveltejs/adapter-cloudflare wrangler
-```
+The package is not published on npm yet. Install a commit from GitHub. The repository ships
+plain JavaScript and declaration files, so no build step runs on install:
 
-The plugin includes its Distilled runtime, Effect runtime, Worker types, and build tooling.
-`@sveltejs/adapter-cloudflare` builds the SvelteKit Worker. Wrangler reads the deployment
-configuration and publishes the composed Worker.
+```bash
+pnpm add -D github:beynar/sveltekit-cloudflare-worker#<commit> @sveltejs/adapter-cloudflare wrangler
+```
 
 ## Configure Vite
 
-Pass the SvelteKit configuration through `cloudflareWorker()`. It installs the adapter, preserves
-the configured server hook, and contributes the required Vite plugins.
+`cloudflareWorker()` takes the options you would pass to `sveltekit()` and installs the adapter. Do
+not add `adapter` yourself; adapter-cloudflare options go in the second argument.
 
 ```ts
 // vite.config.ts
 import { sveltekit } from '@sveltejs/kit/vite';
-import { vitePreprocess } from '@sveltejs/vite-plugin-svelte';
 import { cloudflareWorker } from 'sveltekit-cloudflare-worker';
 import { defineConfig } from 'vite';
 
 export default defineConfig({
 	plugins: [
 		sveltekit(
-			cloudflareWorker({
-				preprocess: vitePreprocess()
-			})
+			cloudflareWorker(
+				{
+					compilerOptions: {
+						runes: ({ filename }) =>
+							filename.split(/[/\\]/).includes('node_modules') ? undefined : true
+					}
+				},
+				{
+					// all optional, see "Options"
+					// config: 'wrangler.jsonc',
+					// workerFile: 'src/worker.ts',
+				}
+			)
 		)
 	]
 });
 ```
 
-No `svelte.config.js` or adapter platform proxy configuration is required.
+`cloudflareWorkerAdapter(options)` returns the adapter alone, for `sveltekit({ adapter })`.
 
 ## Configure Wrangler
 
-Use the adapter output as `main`. In production, `run_worker_first` keeps the composed Worker in
-front of static assets. The development adapter preserves the same middleware ordering.
+`main` must be adapter-cloudflare's output. The build replaces that file with the composed Worker.
 
 ```jsonc
+// wrangler.jsonc
 {
+	"$schema": "./node_modules/wrangler/config-schema.json",
 	"name": "my-app",
 	"main": ".svelte-kit/cloudflare/_worker.js",
-	"compatibility_date": "2026-07-11",
+	"compatibility_date": "2026-11-01",
 	"compatibility_flags": ["nodejs_compat"],
-	"assets": {
-		"binding": "ASSETS",
-		"directory": ".svelte-kit/cloudflare",
-		"run_worker_first": true
+	"assets": { "binding": "ASSETS", "directory": ".svelte-kit/cloudflare" },
+	"durable_objects": { "bindings": [{ "name": "NOTES", "class_name": "NoteRoom" }] },
+	"migrations": [{ "tag": "v1", "new_sqlite_classes": ["NoteRoom"] }],
+	"queues": {
+		"producers": [{ "binding": "JOBS", "queue": "my-app-jobs" }],
+		"consumers": [{ "queue": "my-app-jobs" }]
 	},
-	"connect": [{ "protocol": "tcp", "address": "127.0.0.1", "port": 8788 }],
-	"durable_objects": {
-		"bindings": [{ "name": "MY_DO", "class_name": "MyDurableObject" }]
-	},
-	"migrations": [{ "tag": "v1", "new_sqlite_classes": ["MyDurableObject"] }],
-	"workflows": [
-		{
-			"name": "progress-workflow",
-			"binding": "PROGRESS_WORKFLOW",
-			"class_name": "ProgressWorkflow"
-		}
-	],
-	"triggers": {
-		"crons": ["0 * * * *"]
-	}
+	"triggers": { "crons": ["0 3 * * *"] }
 }
 ```
 
-Local development maps variables, KV, R2, D1, Queues, service bindings, Analytics Engine, rate
-limits, Durable Objects, Workflows, assets, cron triggers, tail consumers, and one loopback TCP
-listener. A configured feature without a Distilled mapping stops development startup with an
-explicit error instead of silently disappearing. It does not block a production build, where
-Wrangler remains the configuration and deployment owner.
+Bindings are only declared here. `vite dev` reads the same file (including `vars`, `.dev.vars` /
+`.env` secrets and `CLOUDFLARE_ENV` environments).
 
-Durable Object ownership is automatic. For each same-script binding, the plugin:
+Static assets follow Cloudflare's rules. Without `assets.run_worker_first`, files from `static/`
+and `_app/immutable` are served before the Worker, and `vite dev` does the same.
 
-- hosts the exported class in the Distilled Worker environment;
-- exposes the binding to `src/worker.ts` as a same-script namespace;
-- exposes the same namespace to SvelteKit's Node environment through a generated cross-worker
-  proxy binding;
-- derives the stable local identity from Wrangler's `name` and `class_name`.
-
-Do not add Distilled `DurableObjectNamespace.local()`, `scriptName`, or `uniqueKey` configuration.
-Keep the Wrangler Worker `name` and Durable Object `class_name` stable when you want to preserve
-local state across restarts.
-
-## Define the Worker
-
-Create `src/worker.ts` and use named exports for handlers and entrypoint classes.
+## Write the Worker
 
 ```ts
+// src/worker.ts
 import { DurableObject } from 'cloudflare:workers';
-import type { WorkerConnect, WorkerFetch, WorkerScheduled } from 'sveltekit-cloudflare-worker';
+import type { WorkerFetch, WorkerQueue, WorkerScheduled } from 'sveltekit-cloudflare-worker';
+import { auth } from '#lib/server/auth.js';
 
-interface Env {
-	MY_DO: DurableObjectNamespace<MyDurableObject>;
-	ASSETS: Fetcher;
-}
-
-export const fetch: WorkerFetch<Env> = async (request, env, ctx, next) => {
+export const fetch: WorkerFetch = async (request, env, ctx, next) => {
 	const url = new URL(request.url);
 
-	if (url.pathname === '/api/count') {
-		return Response.json({ count: await env.MY_DO.getByName('counter').increment() });
+	if (url.pathname.startsWith('/api/auth/')) return auth.handler(request);
+
+	if (url.pathname.startsWith('/rooms/')) {
+		// WebSocket upgrades are forwarded on the same origin in dev and in production.
+		return env.NOTES.getByName(url.pathname.slice('/rooms/'.length)).fetch(request);
 	}
 
-	if (url.pathname === '/socket' && request.headers.get('upgrade')?.toLowerCase() === 'websocket') {
-		return env.MY_DO.getByName(url.searchParams.get('name') ?? 'counter').fetch(request);
-	}
-
-	if (url.pathname === '/with-worker-header') {
-		const response = await next();
+	if (url.pathname === '/') {
+		const response = await next(); // run SvelteKit
 		const headers = new Headers(response.headers);
-		headers.set('x-worker', 'true');
+		headers.set('x-worker', '1');
 		return new Response(response.body, { status: response.status, headers });
 	}
 
-	// Returning void falls through to SvelteKit.
+	// Return nothing: SvelteKit handles the request.
 };
 
-export const scheduled: WorkerScheduled<Env> = async (controller, env) => {
-	console.log('cron triggered', controller.cron);
+export const queue: WorkerQueue<Env, { id: string }> = async (batch, env) => {
+	for (const message of batch.messages) message.ack();
 };
 
-export const connect: WorkerConnect<Env> = async (socket, env) => {
-	const durableObjectSocket = env.MY_DO.getByName('tcp-server').connect('tcp.local:8788');
-	await durableObjectSocket.opened;
-	await Promise.all([
-		socket.readable.pipeTo(durableObjectSocket.writable),
-		durableObjectSocket.readable.pipeTo(socket.writable)
-	]);
+export const scheduled: WorkerScheduled = async (controller, env, ctx) => {
+	ctx.waitUntil.last(() => env.JOBS.send({ id: controller.cron }));
 };
 
-export class MyDurableObject extends DurableObject<Env> {
-	async increment() {
-		const count = ((await this.ctx.storage.get<number>('count')) ?? 0) + 1;
-		await this.ctx.storage.put('count', count);
-		return count;
-	}
-
-	async fetch(request: Request) {
-		if (request.headers.get('upgrade')?.toLowerCase() !== 'websocket') {
-			return new Response('Expected a WebSocket upgrade.', { status: 426 });
-		}
-
-		const [client, server] = Object.values(new WebSocketPair());
-		this.ctx.acceptWebSocket(server);
-		return new Response(null, { status: 101, webSocket: client });
-	}
-
-	async webSocketMessage(socket: WebSocket, message: string | ArrayBuffer) {
-		const count = await this.increment();
-		socket.send(JSON.stringify({ count, message: String(message) }));
-	}
-
-	async connect(socket: Socket) {
-		await socket.readable.pipeTo(socket.writable);
+export class NoteRoom extends DurableObject<Env> {
+	add(text: string) {
+		this.ctx.storage.sql.exec('INSERT INTO notes (text) VALUES (?)', text);
 	}
 }
 ```
 
-SvelteKit receives the same binding graph:
+Rules for the entry:
+
+- Handlers are **named exports** (`export const fetch`, `export async function queue`), not a
+  default export.
+- Exported **classes** become Worker exports. Other named values (constants, helpers) stay private,
+  so they never break workerd's export validation.
+- `ctx.waitUntil.last(fn)` runs `fn` after every other `waitUntil` promise of the handler.
+- Imports resolve like the rest of the app: `#lib/...` package imports, Vite `resolve.alias` entries
+  (for example a `$lib` alias), `node:*` and bare Node built-ins such as `crypto` with
+  `nodejs_compat`. SvelteKit's own modules (`$app/*`, `$env/*`) are not available in the Worker.
+
+## Use the bindings from SvelteKit
+
+adapter-cloudflare 8 no longer provides `event.platform`. Read bindings from `cloudflare:workers`:
 
 ```ts
-// src/routes/count/+server.ts
-export const GET = async ({ platform }) => {
-	const count = await platform!.env.MY_DO.getByName('counter').increment();
-	return Response.json({ count });
-};
-```
+// src/routes/notes/+server.ts
+import { env } from 'cloudflare:workers';
 
-The Worker route and SvelteKit route address the same Durable Object instance when they use the same
-name.
-
-## WebSockets and Durable Objects
-
-The browser connects to the SvelteKit application's origin. It does not connect to a Durable Object
-binding directly:
-
-```ts
-const endpoint = new URL('/socket?name=counter', window.location.href);
-endpoint.protocol = endpoint.protocol === 'https:' ? 'wss:' : 'ws:';
-
-const socket = new WebSocket(endpoint);
-
-socket.addEventListener('open', () => socket.send('hello'));
-socket.addEventListener('message', (event) => {
-	console.log(JSON.parse(String(event.data)));
-});
-```
-
-`src/worker.ts` receives the upgrade, chooses the Durable Object name, and forwards the request to
-its stub. The Durable Object accepts the server half of a `WebSocketPair` with
-`ctx.acceptWebSocket()`. This uses Cloudflare's hibernation-capable WebSocket API, so the connection
-can remain open while an idle object is evicted in production. See Cloudflare's
-[Durable Object WebSocket guide](https://developers.cloudflare.com/durable-objects/best-practices/websockets/).
-
-During development, Vite forwards non-HMR upgrades to the Distilled Worker environment. The same
-`src/worker.ts` fetch export runs in workerd and calls the same-script namespace. Ordinary HTTP
-middleware and SvelteKit server code run in Node and reach that owner through Distilled's platform
-proxy. A WebSocket and a SvelteKit route therefore share the same object and stored state when they
-use the same name.
-
-In production, the composed Worker owns the fetch export and Durable Object class. The same browser
-URL reaches the same binding without the development proxy.
-
-## TCP Connect Handlers
-
-An exported `connect` handler receives raw inbound TCP connections in `src/worker.ts`. Declare its
-listener once in `wrangler.jsonc`:
-
-```jsonc
-{
-	"connect": [{ "protocol": "tcp", "address": "127.0.0.1", "port": 9000 }]
+export async function POST({ request }) {
+	await env.NOTES.getByName('inbox').add(await request.text());
+	return new Response(null, { status: 204 });
 }
 ```
 
-Development reads that declaration and opens the same loopback listener only when `src/worker.ts`
-exports `connect`. The handler and its Durable Objects run inside the same Distilled workerd, so a
-Worker can pass the incoming stream to `env.MY_DO.getByName(name).connect(address)` without
-crossing the Node platform proxy. Production preserves the handler on the composed Worker and
-Wrangler owns the listener configuration.
+In dev this `env` is a proxy to the bindings of the Worker running in workerd. It is the same
+Durable Object namespace, so state written by the Worker is visible to SvelteKit and vice versa.
 
-The older `connectPort` adapter option remains as a development-only compatibility fallback when
-Wrangler has no `connect` declaration. Do not configure both. See Cloudflare's
-[TCP and gRPC Workers announcement](https://blog.cloudflare.com/grpc-workers/).
+## Types
 
-## Automatic Binding Types
+On startup the adapter writes a managed block into `src/app.d.ts`. It declares `Cloudflare.Env`
+from the Wrangler config, with Durable Object and Workflow bindings typed by the classes exported
+from `src/worker.ts`. `cloudflare:workers` `env`, `WorkerFetch` and the other handler types use it
+by default.
 
-The plugin reads the selected Wrangler configuration and maintains a generated block in
-`src/app.d.ts`. It declares:
+Keep `wrangler types` for the runtime types only, so the two `Env` declarations do not conflict:
 
-- `Cloudflare.Env`
-- global `Env`
-- `App.Platform.env` and `App.Platform.ctx`
-- typed internal Durable Object namespaces and Workflow parameters when their classes are exported
-
-Your own declarations remain outside this block:
-
-```ts
-// <sveltekit-cloudflare-worker>
-// generated content
-// </sveltekit-cloudflare-worker>
+```json
+{ "scripts": { "gen": "wrangler types --include-env=false" } }
 ```
 
-The package includes Cloudflare's Worker types. No separate `@cloudflare/workers-types` installation
-is required. Keep the SvelteKit types in `tsconfig.json`:
+Set `typesFile: false` if you prefer to generate `Env` with `wrangler types` yourself.
 
-```jsonc
-{
-	"compilerOptions": {
-		"types": ["$app/types"]
-	}
-}
+## Build and preview
+
+```bash
+vite build          # adapter-cloudflare build + composition of .svelte-kit/cloudflare/_worker.js
+wrangler dev        # serve the composed Worker locally (same .wrangler/state as vite dev)
+wrangler deploy
 ```
 
-Set `typesFile: false` to disable generation or pass another declaration path.
+The build:
 
-## Supported Exports
+1. lets adapter-cloudflare write `_worker.js`;
+2. checks that the output has a default export with a `fetch` handler. Anything unexpected is a
+   build error, never a silent skip;
+3. bundles `src/worker.ts` to `_user-worker.js` with esbuild (`cloudflare:*` and `node:*` external);
+4. moves the adapter Worker to `_sveltekit-worker.js` and writes a `_worker.js` that exports the
+   Worker's classes and handlers around SvelteKit;
+5. adds both internal modules to `.assetsignore`.
 
-| Named export | Type                        | Behavior                                                                |
-| ------------ | --------------------------- | ----------------------------------------------------------------------- |
-| `fetch`      | `WorkerFetch<Env>`          | Runs before SvelteKit; return a response, return void, or call `next()` |
-| `connect`    | `WorkerConnect<Env>`        | Receives an inbound TCP socket                                          |
-| `scheduled`  | `WorkerScheduled<Env>`      | Cron trigger handler                                                    |
-| `queue`      | `WorkerQueue<Env, Message>` | Queue consumer handler                                                  |
-| `email`      | `WorkerEmail<Env>`          | Email routing handler                                                   |
-| `tail`       | `WorkerTail<Env>`           | Tail Worker handler                                                     |
-| `trace`      | `WorkerTrace<Env>`          | Trace handler                                                           |
-| `tailStream` | `WorkerTailStream<Env>`     | Tail stream handler                                                     |
-| `test`       | `WorkerTest<Env>`           | Test handler                                                            |
+`vite preview` is SvelteKit's Node preview with adapter-cloudflare's `getPlatformProxy()`. Use
+`wrangler dev` to exercise the composed Worker.
 
-Exported Durable Object, `WorkflowEntrypoint`, and `WorkerEntrypoint` classes are re-exported from
-the final Worker. Other named values remain internal to the user module and are not presented to
-workerd as entrypoints. The plugin owns the default export.
+Trigger a cron handler locally with `curl "http://localhost:5173/cdn-cgi/handler/scheduled?cron=0+3+*+*+*"`
+(`/__scheduled` also works) in `vite dev`, or with `wrangler dev --test-scheduled` on the build.
 
-## Deferred Cleanup
+## How `vite dev` works
 
-Handler contexts add `ctx.waitUntil.last()`. It accepts a function and starts it after the other
-`waitUntil` promises registered before the handler returns have settled.
-
-```ts
-export const fetch: WorkerFetch<Env> = async (request, env, ctx, next) => {
-	const connection = connect(env.DB);
-
-	ctx.waitUntil(writeAuditLog(connection));
-	ctx.waitUntil.last(() => connection.close());
-
-	return next();
-};
+```text
+browser ──> Vite (Node) ──> Miniflare / workerd: src/worker.ts fetch
+                                   │ next()
+                                   ▼
+                            Vite middleware ──> SvelteKit SSR (Node)
+                                                  │ import { env } from 'cloudflare:workers'
+                                                  ▼
+                            Miniflare binding proxy ──> the same Worker's Durable Objects, D1, R2, KV
 ```
 
-Do not pass an already-created Promise to `last()`. Promise work starts when the Promise is created,
-so it cannot be deferred.
+- The plugin owns one Miniflare instance, configured from the Wrangler config through Wrangler's
+  `unstable_getMiniflareWorkerOptions` and the Miniflare build that Wrangler itself uses.
+- `src/worker.ts` is loaded by Vite's module runner inside workerd (Vite environment
+  `cloudflare_worker`). Edits are HMR updates. Adding or removing an exported class or handler
+  reloads workerd in place, without restarting Vite and with storage kept.
+- Durable Object, Workflow and entrypoint classes are thin wrappers that delegate to the current
+  module. After an edit, the next call constructs the new class with the same `ctx`.
+- `next()` and the `ASSETS` binding go back to Vite's middleware, so they reach SvelteKit (and
+  Vite-served files).
+- WebSocket upgrades other than Vite's HMR socket are forwarded to the Worker.
+- Remote-only bindings (Workers AI, `remote: true` bindings) use Wrangler's remote proxy session.
+  This requires `wrangler login`; without it dev starts and logs a warning.
 
 ## Options
 
-```ts
-sveltekit(
-	cloudflareWorker(
-		{
-			// Normal SvelteKit configuration
-		},
-		{
-			workerFile: 'src/worker.ts',
-			typesFile: 'src/app.d.ts',
-			verbose: false,
-			config: 'wrangler.jsonc',
-			fallback: undefined,
-			routes: undefined
-		}
-	)
-);
-```
-
-`config`, `fallback`, and `routes` are passed to `@sveltejs/adapter-cloudflare`.
-
-The default project root is `process.cwd()`. If the enclosing Vite configuration sets a different
-`root`, pass that same path through the adapter options. This explicit value lets Distilled load the
-correct Wrangler file and bindings before Vite resolves its plugin graph.
-
-## How development works
-
-Run the application normally:
-
-```bash
-npm run dev
-```
-
-SvelteKit keeps its native Node development server, routing, manifest, and HMR. Distilled runs a
-local workerd environment for Cloudflare Durable Objects and WebSockets.
-
-Edits inside `src/worker.ts` update both the Node middleware and workerd Worker without a manual
-server restart. Existing Durable Object WebSockets remain connected across ordinary implementation
-updates. Adding or removing the `connect` export changes the socket topology, so the plugin performs
-the required workerd runtime refresh without restarting the SvelteKit Vite server. Creating or
-deleting the configured server-hook file is also detected without changing `vite.config.ts`.
-
-```mermaid
-flowchart LR
-    HTTP["HTTP request"] --> Node["SvelteKit native Node server"]
-    Node --> Middleware["src/worker.ts fetch in Node"]
-    Middleware --> Kit["SvelteKit hook / route / load / action"]
-    Middleware --> Proxy["Distilled platform proxy"]
-    Kit --> Proxy
-
-    WS["WebSocket upgrade"] --> Vite["Vite upgrade listener"]
-    Vite --> Worker["src/worker.ts fetch in workerd"]
-    TCP["TCP connection"] --> Connect["src/worker.ts connect in workerd"]
-
-    Proxy --> Namespace["Durable Object namespace"]
-    Worker --> Namespace
-    Connect --> Namespace
-    Namespace --> DO["one named object + persisted storage"]
-```
-
-For ordinary HTTP requests, the `fetch` middleware and SvelteKit run in Node. Their Cloudflare
-bindings use Distilled's platform proxy. Exported Durable Object classes run in workerd.
-
-WebSocket upgrades bypass the Node request pipeline and execute the same `src/worker.ts` fetch
-export in workerd. Both paths use the same Durable Object namespace and persisted state. Local state
-is stored in `.sveltekit-cloudflare-worker/local`.
-
-Ignore the package state directory:
-
-```gitignore
-.sveltekit-cloudflare-worker/
-```
-
-Delete `.sveltekit-cloudflare-worker/local` only when you intentionally want a fresh local binding
-state.
-
-## Build and deploy
-
-Build the application, then deploy it with Wrangler:
-
-```bash
-npm run build
-npx wrangler deploy
-```
-
-`@sveltejs/adapter-cloudflare` builds SvelteKit. The plugin composes that output with the handlers
-and classes exported by `src/worker.ts`. Wrangler deploys the result as one Worker, with the
-generated internal modules excluded from public Cloudflare Assets.
-
-To exercise that composed output locally, run `npx wrangler dev` after the build. `npm run preview`
-uses SvelteKit's Node preview server; it serves the built SvelteKit application but does not host
-the composed Worker entrypoints or Cloudflare bindings.
+| Option               | Default                  | Description                                                     |
+| -------------------- | ------------------------ | --------------------------------------------------------------- |
+| `workerFile`         | `'src/worker.ts'`        | Worker entry, relative to the project root.                     |
+| `config`             | first `wrangler.json(c)` | Wrangler config path. Also passed to adapter-cloudflare.        |
+| `environment`        | `CLOUDFLARE_ENV`         | Wrangler environment used by dev and the build.                 |
+| `typesFile`          | `'src/app.d.ts'`         | File that receives the `Cloudflare.Env` block, or `false`.      |
+| `persistState`       | `true`                   | `false`, or `{ path }` instead of `.wrangler/state`.            |
+| `remoteBindings`     | `true`                   | Start Wrangler's remote proxy session for remote-only bindings. |
+| `root`               | Vite's root              | Project root, when it differs from Vite's root.                 |
+| `fallback`, `routes` | adapter defaults         | Passed to adapter-cloudflare.                                   |
+| `verbose`            | `false`                  | Log composition and runtime details.                            |
 
 ## Limitations
 
-- Ordinary HTTP middleware runs in Node during development. Cloudflare bindings are available, but
-  workerd-only globals are not added to Node.
-- SvelteKit's `vite preview` path is Node-only. Use Wrangler after a build to preview the composed
-  Worker and its bindings.
-- WebSocket upgrades run in workerd and do not enter SvelteKit's Node request pipeline. Their
-  `next()` fallback cannot invoke SvelteKit.
-- TCP `connect` handlers run in workerd. SvelteKit's Node platform proxy cannot carry live
-  `Socket` objects.
-- Local development supports one loopback Wrangler `connect` listener. Multiple listeners and
-  non-loopback addresses stop development startup explicitly.
-- Workflow schedules, Containers, remote bindings, and Wrangler binding families without a
-  Distilled mapping are production-only. Development startup rejects them explicitly.
-- Distilled 0.17.1 is a beta runtime dependency and its Wrangler bridge uses Wrangler's unstable
-  configuration normalization API.
-- Distilled 0.17.1's bundled workerd supports compatibility dates through `2026-07-11`. Use that
-  date or an earlier one until the package updates its runtime.
-- SvelteKit v3 and adapter-cloudflare v8 are prerelease dependencies.
+- `connect()` (inbound TCP) is composed into the production Worker, but `vite dev` does not emulate
+  it. A warning is logged.
+- In dev, the module runner evaluates `src/worker.ts` on the first request, not at Worker startup.
+  workerd's global-scope restrictions (no `crypto.randomUUID()`, timers or I/O at module top level)
+  are only enforced by `wrangler dev` and production.
+- SvelteKit reaches Worker bindings through Miniflare's proxy, which reads stub properties
+  synchronously. A Durable Object method called from SvelteKit must not `import()` a module that
+  has not been loaded yet. Static imports are fine, because the Worker module is loaded before
+  SvelteKit runs.
+- `cloudflare:workers` `exports` is not available to SvelteKit code in dev.
 
-## License
+## Migrating from the SvelteKit 2 version (commit `c08908c`)
 
-MIT
+1. Delete `svelte.config.js`. Move its options into `sveltekit(cloudflareWorker({ ... }))` in
+   `vite.config.ts`, and remove `adapter(...)`, `proxyConfig()` and `platformProxy`: Durable Objects
+   no longer need `script_name` rewrites.
+2. Remove `cloudflareWorker()` from the Vite `plugins` array, and remove the `@cloudflare/vite-plugin`
+   dependency.
+3. Replace `event.platform.env` with `import { env } from 'cloudflare:workers'`.
+4. In `src/worker.ts`, use `#lib/...` imports (or keep `$lib` through a Vite `resolve.alias`
+   entry) instead of relative paths, and import the handler types from `sveltekit-cloudflare-worker`.
+5. Bump `@sveltejs/kit` to `^3.1.0`, `@sveltejs/adapter-cloudflare` to `^8.0.2` and Vite to 8.
+
+## Development of this package
+
+```bash
+pnpm install
+pnpm check
+pnpm test                # unit tests
+pnpm test:integration    # builds fixture apps, runs vite dev and wrangler dev
+pnpm dev                 # the demo app in src/routes and src/worker.ts
+```
+
+See [docs/architecture.md](docs/architecture.md) for the design.

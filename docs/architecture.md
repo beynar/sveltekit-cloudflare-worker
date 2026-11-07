@@ -1,97 +1,94 @@
-# Development and deployment architecture
+# Architecture
 
-## Public configuration boundary
+## Public boundary
 
-`cloudflareWorker()` decorates the configuration passed to SvelteKit 3. It records the user's
-`files.hooks.server` path, points SvelteKit at the package hook, and installs the Cloudflare adapter.
-The package hook imports the original hook through a Vite virtual module. It uses only SvelteKit's
-public server-hook contract; there is no generated manifest or private SvelteKit responder.
+`cloudflareWorker(svelteKitOptions, options)` returns the SvelteKit 3 options with
+`adapter: cloudflareWorkerAdapter(options)`. The adapter wraps `@sveltejs/adapter-cloudflare` 8:
 
-The adapter contributes its own Vite plugins through `adapter.vite.plugins.pre`. It owns type
-generation, the Node binding proxy, the Distilled Worker environment, and the generated Worker
-entry.
+- `adapt()` runs adapter-cloudflare, then `composeBuildOutput()` (`src/lib/build-output.js`);
+- `vite.plugins.pre` contains the package plugins and adapter-cloudflare's own plugin, restricted to
+  `vite build` and `vite preview`. In dev the package provides `cloudflare:workers` instead of
+  adapter-cloudflare's `getPlatformProxy()` emulation;
+- `vite.getRequest` adds the Miniflare `cf` object to SvelteKit dev requests.
 
-## Development runtime
-
-SvelteKit owns ordinary HTTP requests in Node. The package hook runs `src/worker.ts` fetch
-middleware around the user's SvelteKit hook:
-
-```text
-HTTP request
-  -> package hook
-  -> src/worker.ts fetch
-  -> user hook and SvelteKit
-  -> src/worker.ts after next()
-```
-
-Distilled owns one workerd Worker environment. Its generated `_dev-entry.ts` exports the Durable
-Object, Workflow, and Worker entrypoint classes from `src/worker.ts`. This environment also owns
-WebSocket upgrades because Node's Fetch API cannot represent Cloudflare's `101 + webSocket`
-response.
-
-Wrangler is the only binding configuration source. `distilled-wrangler.js` derives two views from
-one normalized configuration:
-
-- the workerd Worker gets same-script bindings and hosts the configured classes;
-- SvelteKit's Node platform proxy gets cross-worker bindings targeting that Worker.
-
-For same-script Durable Objects, both views derive the same stable key from Wrangler's Worker name
-and class name. Applications do not configure Distilled `scriptName` or `uniqueKey` values.
-Disk-backed runtime services store local state under `.sveltekit-cloudflare-worker/local`.
-
-```text
-HTTP Worker middleware ----+
-SvelteKit route/load -------+--> Node platform proxy --+
-                                                       +--> one workerd namespace
-WebSocket upgrade -----------> Distilled Worker -------+
-```
-
-Reserved `/cdn-cgi/handler/*` requests are forwarded to the Distilled Worker so scheduled and
-other local handler probes still execute. All other HTTP requests remain with SvelteKit.
-
-Wrangler's top-level `connect` field declares one loopback TCP listener. The listener is installed
-inside the same workerd runtime only when the user Worker exports `connect`; no live `Socket`
-crosses the Node platform proxy. Ordinary Worker edits use HMR. A connect export-shape change
-regenerates the entry and refreshes only the Distilled runtime, not the SvelteKit Vite server.
+`event.platform` is not provided: adapter-cloudflare 8 removed it. SvelteKit code reads
+`cloudflare:workers`.
 
 ## Production composition
 
-`@sveltejs/adapter-cloudflare` owns the SvelteKit production build. After it finishes, the plugin:
+`src/lib/build-output.js` runs after adapter-cloudflare:
 
-1. preserves the adapter Worker as `_sveltekit-worker.js`;
-2. bundles `src/worker.ts` as `_user-worker.js`;
-3. writes one `_worker.js` facade that composes both fetch handlers and re-exports named Worker
-   classes and handlers.
+1. resolves Wrangler `main` and `assets.directory` from the normalized config path;
+2. fails if `main` was not written or has no default export with `fetch` (acorn parse of the actual
+   output, no line matching);
+3. bundles `src/worker.ts` with esbuild (`src/lib/worker-composition.js`). Vite `resolve.alias`,
+   application package.json `imports` with Vite-style extension lookup, and bare Node built-ins
+   (rewritten to `node:`) are handled by esbuild plugins;
+4. classifies exports from the bundled AST: known handler names, and real class bindings.
+   Ordinary values are not re-exported, because workerd validates the export map;
+5. writes `_user-worker.js`, copies the adapter entry to `_sveltekit-worker.js`, writes the facade
+   `_worker.js` and appends both internal files to `.assetsignore`.
 
-The bundler classifies actual class declarations before it writes the facade. Named constants and
-functions can stay in the user module without becoming invalid workerd entrypoints.
+The facade's `fetch` calls the user `fetch(request, env, ctx, next)`, where `next()` calls the
+SvelteKit Worker once. Other handlers delegate directly. Every handler gets the
+`ctx.waitUntil.last()` wrapper (`src/lib/wait-until-last.js`, serialized into the facade).
 
-Wrangler deploys this module graph as one Cloudflare Worker. The internal modules are listed in
-`.assetsignore` so Cloudflare Assets cannot serve them. Both the Worker output and asset directory
-resolve from Wrangler's normalized `configPath`, including when the config lives below the project
-root.
+## Development runtime
 
-Production builds use an inert adapter platform while SvelteKit prerenders. Unsupported
-Distilled-only mappings therefore cannot block a configuration that adapter-cloudflare and
-Wrangler can deploy. `vite preview` remains SvelteKit's Node preview; Wrangler owns local preview
-of the composed production Worker.
+`src/lib/dev/runtime.js` owns one Miniflare instance per project root (shared across Vite server
+restarts). Miniflare is loaded from Wrangler's own dependency so the option shapes produced by
+`unstable_getMiniflareWorkerOptions` match.
 
-## Verification contract
+Miniflare runs one user Worker with two generated modules:
 
-The integration harness proves:
+- `entry.js`: `configure(...)`, a default `WorkerEntrypoint` with the exported handlers, and one
+  wrapper per class (Durable Objects and Workflows from the Wrangler config and migrations,
+  `WorkerEntrypoint` for the other exported classes);
+- `runner.js`: `src/lib/dev/runner-worker.js` bundled with `vite/module-runner`.
 
-- middleware before SvelteKit, SvelteKit itself, and middleware after SvelteKit observe consecutive
-  state in one named Durable Object;
-- a WebSocket message and a following SvelteKit request continue the same named object state;
-- the same open Durable Object WebSocket and Node platform proxy survive a Worker implementation
-  HMR update;
-- adding a connect export activates the Wrangler listener without a full Vite restart;
-- creating and deleting the default server-hook file after startup updates the live app;
-- Durable Object state survives a complete dev-server restart;
-- Workflows start from Worker and SvelteKit code;
-- scheduled handlers execute through the reserved local route;
-- production-only Wrangler bindings do not block prerendering;
-- the standard SvelteKit preview starts without Distilled expecting a separate Worker build;
-- native SvelteKit routing, remotes, server assets, CSS, base paths, service workers, and HMR stay
-  under SvelteKit's Node runtime;
-- the production build exports one composed Worker with the same classes and handlers.
+Internal bindings (stripped from the user `env`):
+
+| Binding                   | Purpose                                                               |
+| ------------------------- | --------------------------------------------------------------------- |
+| `__SVELTEKIT_CF_RUNNER__` | Singleton Durable Object that owns the ModuleRunner and its socket    |
+| `__SVELTEKIT_CF_INVOKE__` | Node service binding: `environment.hot.handleInvoke()` (fetchModule)  |
+| `__SVELTEKIT_CF_EVAL__`   | workerd unsafe-eval binding used by the module evaluator              |
+| `__SVELTEKIT_CF_NEXT__`   | Node service binding into Vite's middleware (`next()`, also `ASSETS`) |
+
+The Vite environment `cloudflare_worker` is a `DevEnvironment` whose hot channel is a WebSocket
+opened through the Worker at a token-protected init path. Vite sends HMR payloads over it; the
+runner sends `invoke` requests through `__SVELTEKIT_CF_INVOKE__`. Modules are evaluated inside the
+runner Durable Object, so promises created during evaluation can be awaited from any request.
+
+HTTP: a middleware placed after Vite's internal middlewares and before SvelteKit dispatches each
+request to Miniflare. Requests coming back through `__SVELTEKIT_CF_NEXT__` carry a marker and skip
+the Worker. WebSocket upgrades (except Vite's) are dispatched and coupled with Miniflare's
+`coupleWebSocket`.
+
+SvelteKit's `ssr` environment resolves `cloudflare:workers` to `src/lib/dev/cloudflare-workers-node.js`,
+whose `env` reads `miniflare.getBindings(workerName)`.
+
+### The synchronous proxy constraint
+
+Miniflare's binding proxy reads properties synchronously (`Atomics.wait`) and blocks the Node main
+thread. `stub.method` on a Durable Object stub reaches the Durable Object wrapper. If the wrapper then
+called `ModuleRunner.import()`, Vite's freshness check would need the blocked Node thread: a deadlock.
+`importWorkerModule()` therefore returns the evaluated module directly while its module-runner node
+is still valid (HMR invalidation clears `meta`), and the Worker's `fetch` always imports the module
+before it calls `next()`.
+
+### Export-shape changes
+
+`hotUpdate` in `cloudflare_worker` schedules an export check (esbuild; shallow parse when the bundle
+fails). If handlers or classes changed, Miniflare is reconfigured with a new `entry.js`, the runner
+reconnects and SvelteKit's bindings are refreshed. Storage persists in `.wrangler/state/v3`.
+
+## Verification
+
+- `src/lib/index.test.ts`: adapter shape and plugin gating, composition and its hard errors,
+  alias / `#imports` / built-in resolution, `waitUntil.last`, generated types.
+- `tests/integration/dev.test.ts`: middleware, fallthrough and `next()`, shared SQLite Durable
+  Object between Worker and SvelteKit, same-origin WebSocket, queue, scheduled, `waitUntil.last`,
+  HMR with state kept, export-shape reload, persistence across restarts.
+- `tests/integration/production.test.ts`: `vite build` + `wrangler dev` of the composed Worker with
+  the same scenarios, and private modules not served.

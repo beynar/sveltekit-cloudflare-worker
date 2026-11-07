@@ -1,10 +1,8 @@
-import { getRequestEvent, query } from '$app/server';
+import { query } from '$app/server';
+import { env } from 'cloudflare:workers';
 
 export const getDemoPlatform = query(async () => {
-	const { platform } = getRequestEvent();
-	const env = platform?.env;
-
-	if (!env?.MY_DO) {
+	if (!env.MY_DO) {
 		throw new Error('Missing MY_DO binding in SvelteKit remote');
 	}
 

@@ -108,7 +108,8 @@
 
 	// --- WebSocket chat ---
 	type ChatMessage =
-		{ type: 'message'; name: string; text: string } | { type: 'system'; text: string };
+		| { type: 'message'; name: string; text: string }
+		| { type: 'system'; text: string };
 
 	let chatMessages = $state<ChatMessage[]>([]);
 	let chatInput = $state('');

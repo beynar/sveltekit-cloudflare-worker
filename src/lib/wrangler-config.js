@@ -5,15 +5,16 @@ import path from 'node:path';
  * @param {string} root
  * @param {(...args: unknown[]) => void} log
  * @param {string} [configFile]
+ * @param {string} [environment]
  * @returns {Promise<Record<string, unknown>>}
  */
-export async function readWranglerConfig(root, log, configFile) {
+export async function readWranglerConfig(root, log, configFile, environment) {
 	const configPath = configFile ? path.resolve(root, configFile) : findWranglerConfig(root);
 	if (!configPath) return {};
 
 	try {
 		const { unstable_readConfig } = await import('wrangler');
-		return unstable_readConfig({ config: configPath }, { hideWarnings: true });
+		return unstable_readConfig({ config: configPath, env: environment }, { hideWarnings: true });
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		log(`Failed to read Wrangler config: ${message}`);

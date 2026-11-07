@@ -1,60 +1,66 @@
 {
 	"name": "sveltekit-cloudflare-worker",
-	"version": "0.0.1",
+	"version": "0.1.0",
+	"description": "Put a src/worker.ts Cloudflare Worker (fetch middleware, Durable Objects, queues, cron, Workflows) in front of SvelteKit 3: in vite dev with workerd and HMR, and in the adapter-cloudflare build.",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/beynar/sveltekit-cloudflare-worker.git"
+	},
+	"type": "module",
 	"scripts": {
 		"dev": "vite dev",
-		"build": "vite build && npm run prepack",
-		"preview": "vite preview",
-		"prepare": "svelte-kit sync || echo ''",
-		"prepack": "svelte-kit sync && svelte-package && publint",
+		"build": "vite build",
+		"preview": "vite build && wrangler dev",
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
-		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
 		"lint": "prettier --check . && eslint .",
 		"format": "prettier --write .",
 		"test:unit": "vitest --config vitest.config.ts",
 		"test:integration": "vitest --config vitest.integration.config.ts --run",
-		"test": "npm run test:unit -- --run"
+		"test": "npm run test:unit -- --run",
+		"prepack": "publint"
 	},
 	"files": [
-		"dist",
-		"!dist/**/*.test.*",
-		"!dist/**/*.spec.*"
+		"src/lib/**/*.js",
+		"src/lib/**/*.d.ts",
+		"!src/lib/**/*.test.*",
+		"!src/lib/demo*"
 	],
-	"sideEffects": [
-		"**/*.css"
-	],
-	"svelte": "./dist/index.js",
-	"types": "./dist/index.d.ts",
-	"type": "module",
+	"types": "./src/lib/index.d.ts",
+	"imports": {
+		"#lib": "./src/lib",
+		"#lib/*": "./src/lib/*"
+	},
 	"exports": {
 		".": {
-			"types": "./dist/index.d.ts",
-			"svelte": "./dist/index.js"
-		}
+			"types": "./src/lib/index.d.ts",
+			"import": "./src/lib/index.js",
+			"default": "./src/lib/index.js"
+		},
+		"./package.json": "./package.json"
+	},
+	"dependencies": {
+		"@cloudflare/workers-types": "^5.20260823.1",
+		"acorn": "^8.18.0",
+		"esbuild": "^0.28.2",
+		"ws": "^8.21.0"
 	},
 	"peerDependencies": {
-		"@cloudflare/vite-plugin": "^1.42.2",
-		"@cloudflare/workers-types": "^4.20260623.1",
-		"@sveltejs/adapter-cloudflare": "^7.2.9",
-		"@sveltejs/kit": "^2.67.0",
-		"esbuild": "^0.28.1",
-		"svelte": "^5.0.0",
-		"vite": "^8.1.0",
-		"wrangler": "^4.104.0"
+		"@sveltejs/adapter-cloudflare": "^8.0.2",
+		"@sveltejs/kit": "^3.1.0",
+		"vite": "^8.0.12",
+		"wrangler": "^4.125.0"
 	},
 	"devDependencies": {
-		"@cloudflare/vite-plugin": "^1.42.2",
-		"@cloudflare/workers-types": "^4.20260623.1",
 		"@eslint/compat": "^2.1.0",
 		"@eslint/js": "^10.0.1",
-		"@sveltejs/adapter-auto": "^7.0.1",
-		"@sveltejs/adapter-cloudflare": "^7.2.9",
-		"@sveltejs/kit": "^2.67.0",
-		"@sveltejs/package": "^2.5.8",
+		"@sveltejs/adapter-auto": "^8.0.0",
+		"@sveltejs/adapter-cloudflare": "^8.0.2",
+		"@sveltejs/kit": "^3.1.1",
 		"@sveltejs/vite-plugin-svelte": "^7.1.2",
 		"@tailwindcss/vite": "^4.3.1",
 		"@types/node": "^26.0.0",
-		"esbuild": "^0.28.1",
+		"@types/ws": "^8.18.2",
 		"eslint": "^10.5.0",
 		"eslint-config-prettier": "^10.1.8",
 		"eslint-plugin-svelte": "^3.19.0",
@@ -72,9 +78,17 @@
 		"typescript-eslint": "^8.62.0",
 		"vite": "^8.1.0",
 		"vitest": "^4.1.9",
-		"wrangler": "^4.104.0"
+		"wrangler": "^4.125.0"
+	},
+	"engines": {
+		"node": ">=20.19"
 	},
 	"keywords": [
-		"svelte"
+		"svelte",
+		"sveltekit",
+		"cloudflare",
+		"workers",
+		"durable-objects",
+		"vite"
 	]
 }

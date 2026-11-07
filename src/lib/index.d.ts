@@ -18,52 +18,64 @@ export interface CloudflareWorkerOptions extends Pick<
 	'config' | 'fallback' | 'routes'
 > {
 	/**
-	 * Absolute or relative project root used to initialize the development runtime.
-	 * Set this only when the SvelteKit Vite root differs from the current working directory.
+	 * Project root. Set this only when the Vite root differs from the current working directory.
 	 * @default process.cwd()
 	 */
 	root?: string;
 	/**
-	 * Path to the worker file relative to the project root.
+	 * Path to the Worker entry, relative to the project root.
 	 * @default 'src/worker.ts'
 	 */
 	workerFile?: string;
 	/**
-	 * Path to the SvelteKit declaration file that receives the managed App.Platform block.
-	 * These types describe the Wrangler config shape. Runtime availability in local dev
-	 * comes from the Distilled Node platform proxy.
-	 * Set to false to disable automatic App.Platform.env type generation.
+	 * Wrangler environment (`env.<name>` in the Wrangler config) used by `vite dev` and the build.
+	 * @default process.env.CLOUDFLARE_ENV
+	 */
+	environment?: string;
+	/**
+	 * Declaration file that receives the generated `Cloudflare.Env` block, derived from the
+	 * Wrangler config and the classes exported by the Worker entry. Set to `false` when you
+	 * generate types with `wrangler types` instead.
 	 * @default 'src/app.d.ts'
 	 */
 	typesFile?: string | false;
 	/**
-	 * Enable verbose logging.
+	 * Where `vite dev` persists local binding state. The default is shared with Wrangler, so
+	 * `wrangler d1 migrations apply --local` and `wrangler dev` see the same data.
+	 * @default true (`.wrangler/state/v3` next to the Wrangler config)
+	 */
+	persistState?: boolean | { path: string };
+	/**
+	 * Connect bindings that only exist remotely (for example Workers AI) during `vite dev`.
+	 * Requires `wrangler login`. When the session cannot start, dev continues without them.
+	 * @default true
+	 */
+	remoteBindings?: boolean;
+	/**
+	 * Log composition and runtime details.
 	 * @default false
 	 */
 	verbose?: boolean;
-	/**
-	 * Local TCP port for a Worker `connect()` handler. The listener starts only when
-	 * `src/worker.ts` exports `connect` and always binds to `127.0.0.1`.
-	 * Use `0` to select an available port and read the selected address from the Vite log.
-	 * @default 8788
-	 * @deprecated Declare the listener with Wrangler's top-level `connect` field.
-	 */
-	connectPort?: number;
 }
 
 /**
- * Add the Cloudflare Worker adapter and its server-hook bridge to a SvelteKit configuration.
+ * Add the Cloudflare Worker adapter to the SvelteKit options passed to `sveltekit()`.
  *
- * In build mode: composes the adapter Worker and user Worker behind one entry module.
- * In dev mode: keeps SvelteKit SSR in Node and hosts Cloudflare entrypoint classes in workerd.
+ * - `vite dev`: runs the Worker entry in workerd (with HMR) in front of SvelteKit, and gives
+ *   SvelteKit server code the same bindings through `import { env } from 'cloudflare:workers'`.
+ * - `vite build`: builds with adapter-cloudflare, then composes one `_worker.js` that exports the
+ *   Worker's classes and handlers around SvelteKit.
  */
 export function cloudflareWorker(
 	config?: Config,
 	options?: CloudflareWorkerOptions
 ): Config & { adapter: Adapter };
 
-/** Execution context exposed through SvelteKit's Node platform proxy. */
-export type WorkerExecutionContext = Pick<ExecutionContext, 'waitUntil' | 'passThroughOnException'>;
+/** The adapter installed by {@link cloudflareWorker}, for use as `sveltekit({ adapter })`. */
+export function cloudflareWorkerAdapter(options?: CloudflareWorkerOptions): Adapter;
+
+/** Execution context passed to Worker handlers. */
+export type WorkerExecutionContext = ExecutionContext;
 
 export type WaitUntilLastTask = () => unknown | Promise<unknown>;
 
@@ -85,56 +97,56 @@ export interface WaitUntilLastExecutionContext extends WorkerExecutionContext {
  * Return a Response to short-circuit, or return nothing to fall through to SvelteKit.
  * Call `next()` to invoke SvelteKit and optionally transform its response.
  */
-export type WorkerFetch<Env = App.Platform['env']> = (
+export type WorkerFetch<Env = Cloudflare.Env> = (
 	request: Request,
 	env: Env,
 	ctx: WaitUntilLastExecutionContext,
 	next: () => Promise<Response>
 ) => Response | void | Promise<Response | void>;
 
-export type WorkerScheduled<Env = App.Platform['env']> = (
+export type WorkerScheduled<Env = Cloudflare.Env> = (
 	controller: ScheduledController,
 	env: Env,
 	ctx: WaitUntilLastExecutionContext
 ) => void | Promise<void>;
 
-export type WorkerConnect<Env = App.Platform['env']> = (
+export type WorkerConnect<Env = Cloudflare.Env> = (
 	socket: Socket,
 	env: Env,
 	ctx: WaitUntilLastExecutionContext
 ) => void | Promise<void>;
 
-export type WorkerQueue<Env = App.Platform['env'], Message = unknown> = (
+export type WorkerQueue<Env = Cloudflare.Env, Message = unknown> = (
 	batch: MessageBatch<Message>,
 	env: Env,
 	ctx: WaitUntilLastExecutionContext
 ) => void | Promise<void>;
 
-export type WorkerEmail<Env = App.Platform['env']> = (
+export type WorkerEmail<Env = Cloudflare.Env> = (
 	message: ForwardableEmailMessage,
 	env: Env,
 	ctx: WaitUntilLastExecutionContext
 ) => void | Promise<void>;
 
-export type WorkerTail<Env = App.Platform['env']> = (
+export type WorkerTail<Env = Cloudflare.Env> = (
 	events: TraceItem[],
 	env: Env,
 	ctx: WaitUntilLastExecutionContext
 ) => void | Promise<void>;
 
-export type WorkerTrace<Env = App.Platform['env']> = (
+export type WorkerTrace<Env = Cloudflare.Env> = (
 	traces: TraceItem[],
 	env: Env,
 	ctx: WaitUntilLastExecutionContext
 ) => void | Promise<void>;
 
-export type WorkerTailStream<Env = App.Platform['env']> = (
+export type WorkerTailStream<Env = Cloudflare.Env> = (
 	event: TailStream.TailEvent<TailStream.Onset>,
 	env: Env,
 	ctx: WaitUntilLastExecutionContext
 ) => TailStream.TailEventHandlerType | Promise<TailStream.TailEventHandlerType>;
 
-export type WorkerTest<Env = App.Platform['env']> = (
+export type WorkerTest<Env = Cloudflare.Env> = (
 	controller: TestController,
 	env: Env,
 	ctx: WaitUntilLastExecutionContext
