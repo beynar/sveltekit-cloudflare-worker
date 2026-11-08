@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { parse } from 'acorn';
 import { LOG_PREFIX, readWranglerConfig } from './project.js';
@@ -19,6 +19,8 @@ import {
  *   configPath?: string,
  *   cloudflareEnv?: string,
  *   aliases?: readonly import('./worker-composition.js').Alias[],
+ *   lazySvelteKit?: boolean,
+ *   splitting?: boolean,
  *   log?: (...args: unknown[]) => void
  * }} input
  */
@@ -27,6 +29,8 @@ export async function composeBuildOutput({
 	configPath,
 	cloudflareEnv,
 	aliases = [],
+	lazySvelteKit = false,
+	splitting = false,
 	log = () => {}
 }) {
 	const config = readWranglerConfig(configPath, cloudflareEnv);
@@ -51,19 +55,65 @@ export async function composeBuildOutput({
 	writeFileSync(path.join(directory, USER_WORKER), content);
 	for (const { name, file } of modules) copyFileSync(file, path.join(directory, name));
 	writeFileSync(path.join(directory, SVELTEKIT_WORKER), svelteKitWorker);
-	writeFileSync(entry, createWorkerFacade(exports));
+	writeFileSync(entry, createWorkerFacade(exports, { lazySvelteKit }));
+	if (splitting) await splitWorker(entry, config);
 
 	const assetsDirectory = path.resolve(path.dirname(config.configPath), config.assets.directory);
-	ignoreInternalModules(
-		assetsDirectory,
-		directory,
-		modules.map(({ name }) => name)
-	);
+	ignoreInternalModules(assetsDirectory, directory, [
+		...modules.map(({ name }) => name),
+		...(splitting ? [CHUNKS, `${CHUNKS}.map`, `${path.basename(entry)}.map`] : [])
+	]);
 
 	log(
 		`Composed ${entry}: handlers=[${exports.handlers.join(', ')}] classes=[${exports.classes.join(', ')}]`
 	);
 	return { entry, exports };
+}
+
+const CHUNKS = '_chunk-*.js';
+
+/**
+ * Re-bundle the composed entry with code splitting: every `import()` (SvelteKit's routes, lazy
+ * Durable Object implementations, and SvelteKit itself with `lazySvelteKit`) becomes its own
+ * module, so a fresh isolate only evaluates what a request needs. Wrangler uploads the chunks as
+ * modules only when a rule says so; the build fails with the rule to add otherwise.
+ * @param {string} entry
+ * @param {any} config
+ */
+async function splitWorker(entry, config) {
+	const sample = CHUNKS.replace('*', '0123abcd');
+	const covered = (config.rules ?? []).some(
+		(/** @type {{ type: string, globs: string[] }} */ rule) =>
+			rule.type === 'ESModule' && rule.globs.some((glob) => path.matchesGlob(sample, glob))
+	);
+	if (!covered) {
+		throw new Error(
+			`${LOG_PREFIX} splitting: true writes ${CHUNKS} modules next to the Worker. Add this rule to the Wrangler config so they are uploaded as modules:\n` +
+				`"rules": [{ "type": "ESModule", "globs": ["${CHUNKS}"], "fallthrough": true }]`
+		);
+	}
+	const directory = path.dirname(entry);
+	const { build } = await import('esbuild');
+	await build({
+		entryPoints: { [path.basename(entry, '.js')]: entry },
+		outdir: directory,
+		allowOverwrite: true,
+		bundle: true,
+		splitting: true,
+		format: 'esm',
+		platform: 'browser',
+		target: 'es2024',
+		conditions: ['workerd', 'worker'],
+		external: ['cloudflare:*', 'node:*', '*.wasm'],
+		chunkNames: CHUNKS.replace('*', '[hash]').replace(/\.js$/, ''),
+		minify: config.minify === true,
+		keepNames: config.keep_names !== false,
+		sourcemap: config.upload_source_maps ? 'linked' : false,
+		logLevel: 'warning'
+	});
+	// Both are now inside the entry or its chunks.
+	rmSync(path.join(directory, SVELTEKIT_WORKER));
+	rmSync(path.join(directory, USER_WORKER));
 }
 
 /**

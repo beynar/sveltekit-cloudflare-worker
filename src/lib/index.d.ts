@@ -46,6 +46,23 @@ export interface CloudflareWorkerOptions extends Pick<
 	 */
 	strictVars?: boolean;
 	/**
+	 * Import SvelteKit's Worker on the first `next()` instead of at Worker start. Requests that
+	 * `src/worker.ts` answers itself (WebSocket upgrades, APIs, other handlers) never evaluate it.
+	 * The first page request of each isolate pays the import, and `instrumentation.server.js`
+	 * then also starts with that request.
+	 * @default false
+	 */
+	lazySvelteKit?: boolean;
+	/**
+	 * Re-bundle the production Worker with code splitting: each `import()` becomes a `_chunk-*.js`
+	 * module that a fresh isolate only evaluates when needed. Requires this Wrangler rule (the build
+	 * fails with the exact snippet otherwise):
+	 * `"rules": [{ "type": "ESModule", "globs": ["_chunk-*.js"], "fallthrough": true }]`.
+	 * Honours Wrangler's `minify`, `keep_names` and `upload_source_maps`.
+	 * @default false
+	 */
+	splitting?: boolean;
+	/**
 	 * Where `vite dev` persists local binding state. The default is shared with Wrangler, so
 	 * `wrangler d1 migrations apply --local` and `wrangler dev` see the same data.
 	 * @default true (`.wrangler/state/v3` next to the Wrangler config)

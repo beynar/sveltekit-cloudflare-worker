@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
@@ -83,5 +83,45 @@ describe('vite build + wrangler dev', () => {
 		// Internal modules are not served as static assets.
 		const privateModule = await fetch(`${base}/_user-worker.js`);
 		await expect(privateModule.text()).resolves.not.toContain('webSocketMessage');
+	});
+
+	it('splits the Worker into lazily evaluated chunks', async () => {
+		const root = await createFixture({
+			plugin: { splitting: true, lazySvelteKit: true },
+			wrangler: { rules: [{ type: 'ESModule', globs: ['_chunk-*.js'], fallthrough: true }] }
+		});
+		const build = await buildFixture(root);
+		expect(build.code, build.output).toBe(0);
+
+		const output = path.join(root, '.svelte-kit/cloudflare');
+		const chunks = readdirSync(output).filter((file) => /^_chunk-.+\.js$/.test(file));
+		expect(chunks.length).toBeGreaterThan(1);
+		const entry = await readFixtureFile(root, '.svelte-kit/cloudflare/_worker.js');
+		expect(entry).toMatch(/import\(["']\.\/_chunk-/);
+		expect(existsSync(path.join(output, '_sveltekit-worker.js'))).toBe(false);
+		const ignore = await readFixtureFile(root, '.svelte-kit/cloudflare/.assetsignore');
+		expect(ignore).toContain('_chunk-*.js');
+
+		const port = await getAvailablePort();
+		const server = startWranglerDev(root, port);
+		const base = `http://127.0.0.1:${port}`;
+		await waitForJson<{ version: string }>(
+			server,
+			`${base}/api/version`,
+			(body) => body.version === 'v1'
+		);
+		await expect((await fetchOk(`${base}/`)).text()).resolves.toContain('fixture home');
+		const name = crypto.randomUUID();
+		expect((await fetchJson<{ count: number }>(`${base}/api/counter?name=${name}`)).count).toBe(1);
+		expect((await fetchJson<{ count: number }>(`${base}/kit/counter?name=${name}`)).count).toBe(2);
+		expect(await fetchJson(`${base}/kit/lazy`)).toEqual({ value: 'lazy:1' });
+		expect(await fetchJson(`${base}/api/wasm`)).toEqual({ sum: 5 });
+	});
+
+	it('requires the Wrangler rule that uploads the chunks', async () => {
+		const root = await createFixture({ plugin: { splitting: true } });
+		const build = await buildFixture(root);
+		expect(build.code).not.toBe(0);
+		expect(build.output).toContain('"globs": ["_chunk-*.js"]');
 	});
 });

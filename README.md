@@ -210,6 +210,28 @@ The build:
 Trigger a cron handler locally with `curl "http://localhost:5173/cdn-cgi/handler/scheduled?cron=0+3+*+*+*"`
 (`/__scheduled` also works) in `vite dev`, or with `wrangler dev --test-scheduled` on the build.
 
+## Startup time
+
+Every WebSocket upgrade, queue batch or cron run can land on a fresh isolate, which evaluates the
+whole Worker before handling it. Two build options cut that cost:
+
+- `lazySvelteKit: true` imports SvelteKit's Worker on the first `next()` only. Requests that
+  `src/worker.ts` answers itself never evaluate SvelteKit's server. The first page request of each
+  isolate pays the import, and `instrumentation.server.js` starts with that request.
+- `splitting: true` re-bundles the Worker with code splitting, so each `import()` (SvelteKit's
+  routes, Durable Object implementations loaded with `import()`, SvelteKit itself with
+  `lazySvelteKit`) becomes a `_chunk-*.js` module evaluated on demand. Wrangler must upload the
+  chunks as modules, and the build stops with this snippet if the rule is missing:
+
+  ```jsonc
+  "rules": [{ "type": "ESModule", "globs": ["_chunk-*.js"], "fallthrough": true }]
+  ```
+
+  The re-bundle follows Wrangler's `minify`, `keep_names` and `upload_source_maps`.
+
+Splitting reduces evaluation, not the size Cloudflare loads: keep heavy dependencies out of the
+Worker when you can.
+
 ## How `vite dev` works
 
 ```text
@@ -237,18 +259,20 @@ browser ──> Vite (Node) ──> Miniflare / workerd: src/worker.ts fetch
 
 ## Options
 
-| Option               | Default                  | Description                                                     |
-| -------------------- | ------------------------ | --------------------------------------------------------------- |
-| `workerFile`         | `'src/worker.ts'`        | Worker entry, relative to the project root.                     |
-| `config`             | first `wrangler.json(c)` | Wrangler config path. Also passed to adapter-cloudflare.        |
-| `environment`        | `CLOUDFLARE_ENV`         | Wrangler environment used by dev and the build.                 |
-| `typesFile`          | `'src/app.d.ts'`         | File that receives the `Cloudflare.Env` block, or `false`.      |
-| `strictVars`         | `true`                   | `false` types `vars` as `string`/`number`/`boolean`.            |
-| `persistState`       | `true`                   | `false`, or `{ path }` instead of `.wrangler/state`.            |
-| `remoteBindings`     | `true`                   | Start Wrangler's remote proxy session for remote-only bindings. |
-| `root`               | Vite's root              | Project root, when it differs from Vite's root.                 |
-| `fallback`, `routes` | adapter defaults         | Passed to adapter-cloudflare.                                   |
-| `verbose`            | `false`                  | Log composition and runtime details.                            |
+| Option               | Default                  | Description                                                         |
+| -------------------- | ------------------------ | ------------------------------------------------------------------- |
+| `workerFile`         | `'src/worker.ts'`        | Worker entry, relative to the project root.                         |
+| `config`             | first `wrangler.json(c)` | Wrangler config path. Also passed to adapter-cloudflare.            |
+| `environment`        | `CLOUDFLARE_ENV`         | Wrangler environment used by dev and the build.                     |
+| `typesFile`          | `'src/app.d.ts'`         | File that receives the `Cloudflare.Env` block, or `false`.          |
+| `strictVars`         | `true`                   | `false` types `vars` as `string`/`number`/`boolean`.                |
+| `lazySvelteKit`      | `false`                  | Import SvelteKit's Worker on the first `next()` (see Startup time). |
+| `splitting`          | `false`                  | Code-split the production Worker (see Startup time).                |
+| `persistState`       | `true`                   | `false`, or `{ path }` instead of `.wrangler/state`.                |
+| `remoteBindings`     | `true`                   | Start Wrangler's remote proxy session for remote-only bindings.     |
+| `root`               | Vite's root              | Project root, when it differs from Vite's root.                     |
+| `fallback`, `routes` | adapter defaults         | Passed to adapter-cloudflare.                                       |
+| `verbose`            | `false`                  | Log composition and runtime details.                                |
 
 ## Limitations
 

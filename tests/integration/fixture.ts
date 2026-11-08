@@ -32,6 +32,8 @@ export type FixtureOptions = {
 	wrangler?: Record<string, unknown>;
 	/** Extra files, relative to the fixture root. */
 	files?: Record<string, string | Buffer>;
+	/** Extra cloudflareWorker() options. */
+	plugin?: Record<string, unknown>;
 };
 
 /** A SvelteKit 3 app (no svelte.config.js) using the package from this repository. */
@@ -84,7 +86,7 @@ import { cloudflareWorker } from ${JSON.stringify(path.join(repoRoot, 'src/lib/i
 export default defineConfig({
 	cacheDir: 'node_modules/.vite-${name}',
 	resolve: { alias: { $lib: new URL('./src/lib', import.meta.url).pathname } },
-	plugins: [sveltekit(cloudflareWorker({}, { remoteBindings: false, typesFile: false }))]
+	plugins: [sveltekit(cloudflareWorker({}, ${JSON.stringify({ remoteBindings: false, typesFile: false, ...options.plugin })}))]
 });
 `,
 		'wrangler.jsonc': JSON.stringify(wrangler, null, '\t'),

@@ -100,6 +100,8 @@ export function cloudflareWorkerAdapter(options = {}) {
 				configPath: settings.configPath,
 				cloudflareEnv: settings.cloudflareEnv,
 				aliases,
+				lazySvelteKit: options.lazySvelteKit,
+				splitting: options.splitting,
 				log: settings.log
 			});
 		},
