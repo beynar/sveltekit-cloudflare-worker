@@ -1,383 +1,158 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { readWranglerConfig } from './wrangler-config.js';
+import { readWranglerConfig } from './project.js';
 
 const MANAGED_START = '// <sveltekit-cloudflare-worker>';
 const MANAGED_END = '// </sveltekit-cloudflare-worker>';
-const DEFAULT_APP_DTS = `// See https://svelte.dev/docs/kit/types#app.d.ts
-// for information about these interfaces
-declare global {
-\tnamespace App {
-\t\t// interface Error {}
-\t\t// interface Locals {}
-\t\t// interface PageData {}
-\t\t// interface PageState {}
-\t}
-}
 
-export {};
-`;
+/** Binding lists of the normalized Wrangler config: [config key, name field, TypeScript type]. */
+const LIST_BINDINGS = /** @type {const} */ ([
+	['kv_namespaces', 'binding', 'KVNamespace'],
+	['r2_buckets', 'binding', 'R2Bucket'],
+	['d1_databases', 'binding', 'D1Database'],
+	['vectorize', 'binding', 'VectorizeIndex'],
+	['hyperdrive', 'binding', 'Hyperdrive'],
+	['analytics_engine_datasets', 'binding', 'AnalyticsEngineDataset'],
+	['ratelimits', 'name', 'RateLimit'],
+	['send_email', 'name', 'SendEmail'],
+	['mtls_certificates', 'binding', 'Fetcher'],
+	['dispatch_namespaces', 'binding', 'DispatchNamespace'],
+	['secrets_store_secrets', 'binding', 'SecretsStoreSecret'],
+	['services', 'binding', 'Fetcher'],
+	[
+		'pipelines',
+		'binding',
+		"import('cloudflare:pipelines').Pipeline<import('cloudflare:pipelines').PipelineRecord>"
+	]
+]);
+/** Single-object bindings: [config key, TypeScript type]. */
+const OBJECT_BINDINGS = /** @type {const} */ ([
+	['assets', 'Fetcher'],
+	['ai', 'Ai'],
+	['browser', 'Fetcher'],
+	['images', 'ImagesBinding'],
+	['media', 'MediaBinding'],
+	['version_metadata', 'WorkerVersionMetadata']
+]);
 
 /**
+ * Write the managed `Cloudflare.Env` block into the SvelteKit declaration file, typing Durable
+ * Object and Workflow bindings with the classes exported by the Worker entry.
+ *
  * @param {{
  *   root: string,
  *   workerFile: string,
- *   typesFile: string | false,
+ *   typesFile: string,
  *   classExports: string[],
  *   configPath?: string,
+ *   cloudflareEnv?: string,
  *   log: (...args: unknown[]) => void
  * }} options
  */
-export async function writeAppEnvTypes({
+export function writeAppEnvTypes({
 	root,
 	workerFile,
 	typesFile,
 	classExports,
 	configPath,
+	cloudflareEnv,
 	log
 }) {
-	if (typesFile === false) return;
+	const file = path.resolve(root, typesFile);
+	const config = readWranglerConfig(configPath, cloudflareEnv);
+	const worker = typeImportPath(path.dirname(file), path.resolve(root, workerFile));
+	/** @param {string} className */
+	const workerClass = (className) =>
+		classExports.includes(className) ? `import(${tsString(worker)}).${className}` : undefined;
 
-	const appTypesPath = path.resolve(root, typesFile);
-	const config = await readWranglerConfig(root, log, configPath);
-	const workerPath = path.resolve(root, workerFile);
-	const workerImportPath = existsSync(workerPath)
-		? toTypeImportPath(path.dirname(appTypesPath), workerPath)
-		: null;
-	const managedBlock = buildManagedBlock(config, workerImportPath, new Set(classExports));
-	const existingContent = existsSync(appTypesPath)
-		? readFileSync(appTypesPath, 'utf-8')
-		: DEFAULT_APP_DTS;
-	const nextContent = replaceManagedBlock(existingContent, managedBlock);
-
-	mkdirSync(path.dirname(appTypesPath), { recursive: true });
-	if (existingContent !== nextContent) {
-		writeFileSync(appTypesPath, nextContent);
-		log(`Updated ${path.relative(root, appTypesPath)} with Cloudflare binding types.`);
+	/** @type {[name: string, type: string][]} */
+	const bindings = [];
+	for (const [key, nameField, type] of LIST_BINDINGS) {
+		for (const binding of config[key] ?? []) bindings.push([binding[nameField], type]);
 	}
-}
+	for (const binding of config.queues.producers) bindings.push([binding.binding, 'Queue']);
+	for (const binding of config.unsafe.bindings ?? []) bindings.push([binding.name, 'unknown']);
+	for (const [key, type] of OBJECT_BINDINGS) {
+		if (config[key]?.binding) bindings.push([config[key].binding, type]);
+	}
+	for (const name of config.secrets?.required ?? []) bindings.push([name, 'string']);
+	for (const [name, value] of Object.entries(config.vars))
+		bindings.push([name, literalType(value)]);
+	for (const name of Object.keys(config.text_blobs ?? {})) bindings.push([name, 'string']);
+	for (const name of Object.keys(config.data_blobs ?? {})) bindings.push([name, 'ArrayBuffer']);
+	for (const { name, class_name } of config.durable_objects.bindings) {
+		const type = workerClass(class_name);
+		bindings.push([name, type ? `DurableObjectNamespace<${type}>` : 'DurableObjectNamespace']);
+	}
+	for (const { binding, class_name } of config.workflows) {
+		const type = workerClass(class_name);
+		bindings.push([
+			binding,
+			type ? `Workflow<Parameters<${type}['run']>[0]['payload']>` : 'Workflow'
+		]);
+	}
 
-/**
- * @param {Record<string, unknown>} config
- * @param {string | null} workerImportPath
- * @param {Set<string>} classExports
- * @returns {string}
- */
-function buildManagedBlock(config, workerImportPath, classExports) {
-	const bindings = collectBindings(config, workerImportPath, classExports);
-	const durableClasses = collectDurableClassNames(config);
-	const lines = [
+	/** @type {Map<string, string>} The first declaration of a name wins. */
+	const unique = new Map();
+	for (const [name, type] of bindings) if (!unique.has(name)) unique.set(name, type);
+
+	const durableClasses = config.durable_objects.bindings.map(
+		(/** @type {{ class_name: string }} */ binding) => tsString(binding.class_name)
+	);
+	const block = [
 		MANAGED_START,
 		'/* eslint-disable */',
 		'// Generated by sveltekit-cloudflare-worker. Do not edit this block.',
 		'// prettier-ignore',
 		'declare global {',
 		'\tnamespace Cloudflare {',
-		'\t\tinterface GlobalProps {'
-	];
+		'\t\tinterface GlobalProps {',
+		`\t\t\tmainModule: typeof import(${tsString(worker)});`,
+		...(durableClasses.length ? [`\t\t\tdurableNamespaces: ${durableClasses.join(' | ')};`] : []),
+		'\t\t}',
+		'\t\tinterface Env {',
+		...[...unique].map(([name, type]) => `\t\t\t${propertyName(name)}: ${type};`),
+		'\t\t}',
+		'\t}',
+		'\tinterface Env extends Cloudflare.Env {}',
+		'}',
+		MANAGED_END
+	].join('\n');
 
-	if (workerImportPath) {
-		lines.push(`\t\t\tmainModule: typeof import(${toTsString(workerImportPath)});`);
-	}
-	if (durableClasses.length > 0) {
-		lines.push(`\t\t\tdurableNamespaces: ${durableClasses.map(toTsString).join(' | ')};`);
-	}
-
-	lines.push('\t\t}', '\t\tinterface Env {');
-	for (const binding of bindings) {
-		lines.push(`\t\t\t${formatProperty(binding.name, binding.type, binding.comment)}`);
-	}
-	lines.push('\t\t}', '\t}', '\tinterface Env extends Cloudflare.Env {}', '}', MANAGED_END);
-
-	return lines.join('\n');
-}
-
-/**
- * @param {Record<string, unknown>} config
- * @param {string | null} workerImportPath
- * @param {Set<string>} classExports
- * @returns {{ name: string, type: string, comment?: string }[]}
- */
-function collectBindings(config, workerImportPath, classExports) {
-	/** @type {{ name: string, type: string, comment?: string }[]} */
-	const bindings = [];
-
-	addNamedArrayBindings(bindings, config.kv_namespaces, 'binding', 'KVNamespace');
-	addNamedArrayBindings(bindings, config.r2_buckets, 'binding', 'R2Bucket');
-	addNamedArrayBindings(bindings, config.d1_databases, 'binding', 'D1Database');
-	addNamedArrayBindings(bindings, config.vectorize, 'binding', 'VectorizeIndex');
-	addNamedArrayBindings(bindings, config.hyperdrive, 'binding', 'Hyperdrive');
-	addNamedArrayBindings(
-		bindings,
-		config.analytics_engine_datasets,
-		'binding',
-		'AnalyticsEngineDataset'
-	);
-	addNamedArrayBindings(bindings, getQueueProducers(config), 'binding', 'Queue');
-	addNamedArrayBindings(bindings, config.ratelimits, 'name', 'RateLimit');
-	addNamedArrayBindings(bindings, config.send_email, 'name', 'SendEmail');
-	addNamedArrayBindings(bindings, config.mtls_certificates, 'binding', 'Fetcher');
-	addNamedArrayBindings(bindings, config.dispatch_namespaces, 'binding', 'DispatchNamespace');
-	addNamedArrayBindings(
-		bindings,
-		config.pipelines,
-		'binding',
-		"import('cloudflare:pipelines').Pipeline<import('cloudflare:pipelines').PipelineRecord>"
-	);
-	addNamedArrayBindings(bindings, config.secrets_store_secrets, 'binding', 'SecretsStoreSecret');
-
-	for (const service of asRecordArray(config.services)) {
-		const name = getString(service, 'binding');
-		if (name)
-			bindings.push({ name, type: 'Fetcher', comment: getString(service, 'service') ?? undefined });
-	}
-
-	for (const binding of asRecordArray(getRecord(config.unsafe)?.bindings)) {
-		const name = getString(binding, 'name');
-		if (name)
-			bindings.push({ name, type: 'unknown', comment: getString(binding, 'type') ?? undefined });
-	}
-
-	addObjectBinding(bindings, config.assets, 'binding', 'Fetcher');
-	addObjectBinding(bindings, config.ai, 'binding', 'Ai');
-	addObjectBinding(bindings, config.browser, 'binding', 'Fetcher');
-	addObjectBinding(bindings, config.images, 'binding', 'ImagesBinding');
-	addObjectBinding(bindings, config.media, 'binding', 'MediaBinding');
-	addObjectBinding(bindings, config.version_metadata, 'binding', 'WorkerVersionMetadata');
-
-	addRequiredSecretBindings(bindings, config.secrets);
-	addVarBindings(bindings, config.vars);
-	addDataBlobBindings(bindings, config.text_blobs, 'string');
-	addDataBlobBindings(bindings, config.data_blobs, 'ArrayBuffer');
-	addDurableObjectBindings(bindings, config, workerImportPath, classExports);
-	addWorkflowBindings(bindings, config, workerImportPath, classExports);
-
-	return dedupeBindings(bindings);
-}
-
-/**
- * @param {{ name: string, type: string, comment?: string }[]} bindings
- * @param {unknown} secrets
- */
-function addRequiredSecretBindings(bindings, secrets) {
-	const required = getRecord(secrets)?.required;
-	if (!Array.isArray(required)) return;
-	for (const name of required) {
-		if (typeof name === 'string' && name.length > 0) bindings.push({ name, type: 'string' });
+	const current = existsSync(file) ? readFileSync(file, 'utf-8') : 'export {};\n';
+	const start = current.indexOf(MANAGED_START);
+	const end = current.indexOf(MANAGED_END);
+	const next =
+		start !== -1 && end > start
+			? `${current.slice(0, start).trimEnd()}\n\n${block}\n\n${current.slice(end + MANAGED_END.length).trimStart()}`.trimEnd() +
+				'\n'
+			: `${current.trimEnd()}\n\n${block}\n`;
+	if (next !== current) {
+		writeFileSync(file, next);
+		log(`Updated ${path.relative(root, file)} with Cloudflare binding types.`);
 	}
 }
 
-/**
- * @param {{ name: string, type: string, comment?: string }[]} bindings
- * @param {unknown} value
- * @param {string} nameKey
- * @param {string} type
- */
-function addNamedArrayBindings(bindings, value, nameKey, type) {
-	for (const binding of asRecordArray(value)) {
-		const name = getString(binding, nameKey);
-		if (name) bindings.push({ name, type });
-	}
+/** @param {unknown} value */
+function literalType(value) {
+	return typeof value === 'string' ? tsString(value) : JSON.stringify(value);
 }
 
-/**
- * @param {{ name: string, type: string, comment?: string }[]} bindings
- * @param {unknown} value
- * @param {string} nameKey
- * @param {string} type
- */
-function addObjectBinding(bindings, value, nameKey, type) {
-	const binding = getRecord(value);
-	const name = binding ? getString(binding, nameKey) : null;
-	if (name) bindings.push({ name, type });
-}
-
-/**
- * @param {{ name: string, type: string, comment?: string }[]} bindings
- * @param {unknown} vars
- */
-function addVarBindings(bindings, vars) {
-	const records = getRecord(vars);
-	if (!records) return;
-
-	for (const [name, value] of Object.entries(records)) {
-		bindings.push({ name, type: toLiteralType(value) });
-	}
-}
-
-/**
- * @param {{ name: string, type: string, comment?: string }[]} bindings
- * @param {unknown} blobs
- * @param {string} type
- */
-function addDataBlobBindings(bindings, blobs, type) {
-	const records = getRecord(blobs);
-	if (!records) return;
-
-	for (const name of Object.keys(records)) {
-		bindings.push({ name, type });
-	}
-}
-
-/**
- * @param {{ name: string, type: string, comment?: string }[]} bindings
- * @param {Record<string, unknown>} config
- * @param {string | null} workerImportPath
- * @param {Set<string>} classExports
- */
-function addDurableObjectBindings(bindings, config, workerImportPath, classExports) {
-	for (const binding of asRecordArray(getRecord(config.durable_objects)?.bindings)) {
-		const name = getString(binding, 'name');
-		const className = getString(binding, 'class_name');
-		if (!name) continue;
-		const type =
-			workerImportPath && className && classExports.has(className)
-				? `DurableObjectNamespace<import(${toTsString(workerImportPath)}).${className}>`
-				: 'DurableObjectNamespace';
-		bindings.push({ name, type });
-	}
-}
-
-/**
- * @param {{ name: string, type: string, comment?: string }[]} bindings
- * @param {Record<string, unknown>} config
- * @param {string | null} workerImportPath
- * @param {Set<string>} classExports
- */
-function addWorkflowBindings(bindings, config, workerImportPath, classExports) {
-	for (const binding of asRecordArray(config.workflows)) {
-		const name = getString(binding, 'binding');
-		const className = getString(binding, 'class_name');
-		if (!name) continue;
-		const type =
-			workerImportPath && className && classExports.has(className)
-				? `Workflow<\n\t\t\tParameters<import(${toTsString(workerImportPath)}).${className}['run']>[0]['payload']\n\t\t>`
-				: 'Workflow';
-		bindings.push({ name, type });
-	}
-}
-
-/**
- * @param {Record<string, unknown>} config
- * @returns {string[]}
- */
-function collectDurableClassNames(config) {
-	return asRecordArray(getRecord(config.durable_objects)?.bindings)
-		.map((binding) => getString(binding, 'class_name'))
-		.filter((name) => name !== null);
-}
-
-/**
- * @param {{ name: string, type: string, comment?: string }[]} bindings
- * @returns {{ name: string, type: string, comment?: string }[]}
- */
-function dedupeBindings(bindings) {
-	const seen = new Set();
-	return bindings.filter((binding) => {
-		if (seen.has(binding.name)) return false;
-		seen.add(binding.name);
-		return true;
-	});
-}
-
-/**
- * @param {unknown} value
- * @returns {Record<string, unknown>[]}
- */
-function getQueueProducers(value) {
-	const config = getRecord(value);
-	const queues = getRecord(config?.queues);
-	return asRecordArray(queues?.producers);
-}
-
-/**
- * @param {unknown} value
- * @returns {Record<string, unknown> | null}
- */
-function getRecord(value) {
-	return value && typeof value === 'object' && !Array.isArray(value)
-		? /** @type {Record<string, unknown>} */ (value)
-		: null;
-}
-
-/**
- * @param {unknown} value
- * @returns {Record<string, unknown>[]}
- */
-function asRecordArray(value) {
-	return Array.isArray(value) ? value.map(getRecord).filter((record) => record !== null) : [];
-}
-
-/**
- * @param {Record<string, unknown>} record
- * @param {string} key
- * @returns {string | null}
- */
-function getString(record, key) {
-	const value = record[key];
-	return typeof value === 'string' && value.length > 0 ? value : null;
-}
-
-/**
- * @param {unknown} value
- * @returns {string}
- */
-function toLiteralType(value) {
-	if (typeof value === 'string') return toTsString(value);
-	if (value === null || typeof value === 'number' || typeof value === 'boolean') {
-		return JSON.stringify(value);
-	}
-	if (Array.isArray(value) || (value && typeof value === 'object')) {
-		return JSON.stringify(value);
-	}
-	return 'unknown';
-}
-
-/**
- * @param {string} value
- * @returns {string}
- */
-function toTsString(value) {
+/** @param {string} value */
+function tsString(value) {
 	return `'${value.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\r/g, '\\r').replace(/\n/g, '\\n')}'`;
 }
 
-/**
- * @param {string} name
- * @param {string} type
- * @param {string} [comment]
- * @returns {string}
- */
-function formatProperty(name, type, comment) {
-	const property = /^[$A-Z_a-z][$\w]*$/.test(name) ? name : JSON.stringify(name);
-	const suffix = comment ? ` /* ${comment.replace(/\*\//g, '* /')} */` : '';
-	return `${property}: ${type};${suffix}`;
+/** @param {string} name */
+function propertyName(name) {
+	return /^[$A-Z_a-z][$\w]*$/.test(name) ? name : JSON.stringify(name);
 }
 
-/**
- * @param {string} content
- * @param {string} managedBlock
- * @returns {string}
- */
-function replaceManagedBlock(content, managedBlock) {
-	const start = content.indexOf(MANAGED_START);
-	const end = content.indexOf(MANAGED_END);
-
-	if (start !== -1 && end !== -1 && end > start) {
-		const before = content.slice(0, start).trimEnd();
-		const after = content.slice(end + MANAGED_END.length).trimStart();
-		return `${before}\n\n${managedBlock}\n\n${after}`.trimEnd() + '\n';
-	}
-
-	return `${content.trimEnd()}\n\n${managedBlock}\n`;
-}
-
-/**
- * @param {string} fromDir
- * @param {string} target
- * @returns {string}
- */
-function toTypeImportPath(fromDir, target) {
-	let relativePath = path.relative(fromDir, target).replace(/\\/g, '/');
-	if (!relativePath.startsWith('.')) relativePath = `./${relativePath}`;
-	return relativePath.replace(/\.(m?[jt]s|tsx|jsx)$/, '');
+/** @param {string} fromDirectory @param {string} target */
+function typeImportPath(fromDirectory, target) {
+	const relative = path.relative(fromDirectory, target).replace(/\\/g, '/');
+	return (relative.startsWith('.') ? relative : `./${relative}`).replace(
+		/\.(m?[jt]s|tsx|jsx)$/,
+		''
+	);
 }

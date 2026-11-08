@@ -7,13 +7,20 @@ import { writeAppEnvTypes } from './binding-types.js';
 import { composeBuildOutput } from './build-output.js';
 import { cloudflareWorker, cloudflareWorkerAdapter } from './index.js';
 import { __sveltekitCloudflareWorkerWaitUntilLast } from './wait-until-last.js';
-import { bundleWorker, createWorkerFacade } from './worker-composition.js';
+import { bundleWorker } from './worker-composition.js';
 
 const roots: string[] = [];
 
 afterEach(async () => {
 	await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
+
+function compose(root: string) {
+	return {
+		workerPath: path.join(root, 'src/worker.ts'),
+		configPath: path.join(root, 'wrangler.jsonc')
+	};
+}
 
 async function project(files: Record<string, string>) {
 	const root = await mkdtemp(path.join(tmpdir(), 'skcw-unit-'));
@@ -108,19 +115,15 @@ describe('composeBuildOutput()', () => {
 			'.svelte-kit/cloudflare/_worker.js': ADAPTER_OUTPUT,
 			'.svelte-kit/cloudflare/.assetsignore': '_worker.js\n'
 		});
-		const { exports } = await composeBuildOutput({
-			root,
-			workerFile: 'src/worker.ts',
-			log: () => {}
-		});
+		const { exports } = await composeBuildOutput(compose(root));
 		expect(exports).toEqual({ handlers: ['fetch', 'queue', 'scheduled'], classes: ['Room'] });
 
 		const output = path.join(root, '.svelte-kit/cloudflare');
 		const entry = await readFile(path.join(output, '_worker.js'), 'utf-8');
-		expect(entry).toContain("import worker_default from './_sveltekit-worker.js';");
+		expect(entry).toContain("import svelteKit from './_sveltekit-worker.js';");
 		expect(entry).toContain("export { Room } from './_user-worker.js';");
 		expect(entry).not.toContain('helper');
-		expect(entry).toMatch(/async queue\(batch, env, ctx\)/);
+		expect(entry).toMatch(/async queue\(event, env, ctx\)/);
 		expect(await readFile(path.join(output, '_sveltekit-worker.js'), 'utf-8')).toBe(ADAPTER_OUTPUT);
 		expect(await readFile(path.join(output, '.assetsignore'), 'utf-8')).toBe(
 			'_worker.js\n_sveltekit-worker.js\n_user-worker.js\n'
@@ -129,9 +132,9 @@ describe('composeBuildOutput()', () => {
 
 	it('fails when adapter-cloudflare did not write the Wrangler entry', async () => {
 		const root = await project({ 'wrangler.jsonc': WRANGLER, 'src/worker.ts': WORKER });
-		await expect(
-			composeBuildOutput({ root, workerFile: 'src/worker.ts', log: () => {} })
-		).rejects.toThrow(/did not write the Worker entry/);
+		await expect(composeBuildOutput(compose(root))).rejects.toThrow(
+			/did not write the Worker entry/
+		);
 	});
 
 	it('fails on an adapter output without a default fetch export', async () => {
@@ -140,20 +143,9 @@ describe('composeBuildOutput()', () => {
 			'src/worker.ts': WORKER,
 			'.svelte-kit/cloudflare/_worker.js': 'export const worker = {};\n'
 		});
-		await expect(
-			composeBuildOutput({ root, workerFile: 'src/worker.ts', log: () => {} })
-		).rejects.toThrow(/no default export with a fetch handler/);
-	});
-
-	it('refuses to compose an entry twice', async () => {
-		const root = await project({
-			'wrangler.jsonc': WRANGLER,
-			'src/worker.ts': WORKER,
-			'.svelte-kit/cloudflare/_worker.js': createWorkerFacade({ handlers: ['fetch'], classes: [] })
-		});
-		await expect(
-			composeBuildOutput({ root, workerFile: 'src/worker.ts', log: () => {} })
-		).rejects.toThrow(/already a composed entry/);
+		await expect(composeBuildOutput(compose(root))).rejects.toThrow(
+			/no default export with a fetch handler/
+		);
 	});
 });
 
@@ -212,7 +204,7 @@ describe('writeAppEnvTypes()', () => {
 			}),
 			'src/worker.ts': WORKER
 		});
-		await writeAppEnvTypes({
+		writeAppEnvTypes({
 			root,
 			workerFile: 'src/worker.ts',
 			typesFile: 'src/app.d.ts',

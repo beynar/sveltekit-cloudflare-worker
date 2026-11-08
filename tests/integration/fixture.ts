@@ -6,7 +6,7 @@ import path from 'node:path';
 import type { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 
-export const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const requestTimeoutMs = 10_000;
 const temporaryRoots: string[] = [];
 const servers: Server[] = [];
@@ -131,7 +131,7 @@ export function uuidLength() {
 }
 
 /** The fixture Worker. `version` is returned by /api/version and changes on HMR. */
-export function workerSource(version: string) {
+function workerSource(version: string) {
 	return `import { DurableObject } from 'cloudflare:workers';
 import { message } from '$lib/message';
 import { hash, uuidLength } from '#lib/hash';

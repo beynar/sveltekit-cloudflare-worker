@@ -27,9 +27,7 @@ declare global {
 			MY_DO: DurableObjectNamespace<import('./worker').MyDurableObject>;
 			CHAT_ROOM: DurableObjectNamespace<import('./worker').ChatRoom>;
 			WORKFLOW_DO: DurableObjectNamespace<import('./worker').WorkflowOrchestrator>;
-			PROGRESS_WORKFLOW: Workflow<
-			Parameters<import('./worker').ProgressWorkflow['run']>[0]['payload']
-		>;
+			PROGRESS_WORKFLOW: Workflow<Parameters<import('./worker').ProgressWorkflow['run']>[0]['payload']>;
 		}
 	}
 	interface Env extends Cloudflare.Env {}

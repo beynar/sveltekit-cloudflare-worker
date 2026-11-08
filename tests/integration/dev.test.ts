@@ -1,3 +1,5 @@
+import { existsSync } from 'node:fs';
+import { readFile, writeFile } from 'node:fs/promises';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
 	cleanupFixtures,
@@ -132,7 +134,6 @@ describe('vite dev', () => {
 		const name = crypto.randomUUID();
 		await fetchJson(`${base}/api/counter?name=${name}`);
 
-		const { readFile, writeFile } = await import('node:fs/promises');
 		const workerPath = `${root}/src/worker.ts`;
 		const source = await readFile(workerPath, 'utf-8');
 		await writeFile(
@@ -170,7 +171,6 @@ describe('vite dev', () => {
 		);
 		await first.stop();
 
-		const { existsSync } = await import('node:fs');
 		expect(existsSync(`${root}/.wrangler/state/v3`)).toBe(true);
 
 		const secondPort = await getAvailablePort();
