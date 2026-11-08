@@ -49,8 +49,13 @@ export async function createFixture(options: FixtureOptions = {}) {
 		assets: { binding: 'ASSETS', directory: '.svelte-kit/cloudflare' },
 		vars: { GREETING: 'hello from vars' },
 		kv_namespaces: [{ binding: 'KV', id: 'fixture-kv' }],
-		durable_objects: { bindings: [{ name: 'COUNTER', class_name: 'Counter' }] },
-		migrations: [{ tag: 'v1', new_sqlite_classes: ['Counter'] }],
+		durable_objects: {
+			bindings: [
+				{ name: 'COUNTER', class_name: 'Counter' },
+				{ name: 'LAZY', class_name: 'LazyCounter' }
+			]
+		},
+		migrations: [{ tag: 'v1', new_sqlite_classes: ['Counter', 'LazyCounter'] }],
 		queues: {
 			producers: [{ binding: 'JOBS', queue: `${name}-jobs` }],
 			consumers: [{ queue: `${name}-jobs`, max_batch_size: 1, max_batch_timeout: 1 }]
@@ -117,6 +122,20 @@ export const GET = async ({ url }) => {
 };
 `,
 		'src/lib/message.ts': `export const message = 'hello from $lib';\n`,
+		'src/lazy-impl.ts': `let count = 0;\nexport function next() {\n\treturn ++count;\n}\n`,
+		'src/lazy-label.ts': `export const label = 'lazy';\n`,
+		'src/lazy-entrypoint.ts': `export const label = 'lazy entrypoint';\n`,
+		'src/routes/kit/lazy-rpc/+server.ts': `import { env } from 'cloudflare:workers';
+
+export const GET = async () => Response.json({ label: await env.GREETER.lazyLabel() });
+`,
+		'src/routes/kit/lazy/+server.ts': `import { env } from 'cloudflare:workers';
+
+export const GET = async ({ url }) => {
+	const value = await env.LAZY.getByName(url.searchParams.get('name') ?? 'lazy').increment();
+	return Response.json({ value });
+};
+`,
 		'src/lib/hash.ts': `import { createHash } from 'crypto';
 import { randomUUID } from 'node:crypto';
 
@@ -215,12 +234,32 @@ export class Greeter extends WorkerEntrypoint {
 	greet(name) {
 		return 'hello ' + name + ' from ' + VERSION;
 	}
+
+	async lazyLabel() {
+		const { label } = await import('./lazy-entrypoint');
+		return label;
+	}
 }
 
 export async function scheduled(controller, env) {
 	const current = Number((await env.KV.get('scheduled')) ?? 0);
 	await env.KV.put('scheduled', String(current + 1));
 	await env.KV.put('scheduled-cron', controller.cron);
+}
+
+// Loads its implementation lazily, like Durable Object shells that import() their code.
+export class LazyCounter extends DurableObject {
+	constructor(ctx, env) {
+		super(ctx, env);
+		ctx.blockConcurrencyWhile(async () => {
+			this.impl = await import('./lazy-impl');
+		});
+	}
+
+	async increment() {
+		const { label } = await import('./lazy-label');
+		return label + ':' + this.impl.next();
+	}
 }
 
 export class Counter extends DurableObject {

@@ -71,11 +71,18 @@ whose `env` reads `miniflare.getBindings(workerName)`.
 ### The synchronous proxy constraint
 
 Miniflare's binding proxy reads properties synchronously (`Atomics.wait`) and blocks the Node main
-thread. `stub.method` on a Durable Object stub reaches the Durable Object wrapper. If the wrapper then
-called `ModuleRunner.import()`, Vite's freshness check would need the blocked Node thread: a deadlock.
-`importWorkerModule()` therefore returns the evaluated module directly while its module-runner node
-is still valid (HMR invalidation clears `meta`), and the Worker's `fetch` always imports the module
-before it calls `next()`.
+thread. It also awaits the whole call when the first call of a service-binding method is made
+synchronously. Workerd code that runs during those operations must not need Node, where Vite runs:
+
+- `importWorkerModule()` returns the evaluated module directly while its module-runner node is still
+  valid (HMR invalidation clears `meta`), instead of `ModuleRunner.import()`, which always asks Vite.
+- After evaluating the entry, the runner prefetches the `fetchModule` result of every module that
+  is reachable but not evaluated yet, following static imports and `import()` in the transformed
+  code. Later imports, such as a Durable Object constructor's `import()`, are answered from that
+  cache. HMR messages clear it.
+- RPC property reads resolve from the exported class: a method is returned without constructing the
+  instance, which is only created when the method is called.
+- The Worker's `fetch` always imports the module (and prefetches) before it calls `next()`.
 
 ### Export-shape changes
 

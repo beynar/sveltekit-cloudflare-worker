@@ -89,6 +89,19 @@ describe('vite dev', () => {
 		expect(server.getOutput()).not.toMatch(/error/i);
 	});
 
+	it('lets SvelteKit call a Durable Object that loads its code with import()', async () => {
+		const root = await createFixture();
+		const port = await getAvailablePort();
+		const server = startDevServer(root, port);
+		const base = `http://127.0.0.1:${port}`;
+		// The first request of the session: neither implementation module is loaded yet.
+		const first = await waitForJson<{ value: string }>(server, `${base}/kit/lazy`, () => true);
+		expect(first).toEqual({ value: 'lazy:1' });
+		expect(await fetchJson(`${base}/kit/lazy`)).toEqual({ value: 'lazy:2' });
+		// Same for a named entrypoint method called over RPC.
+		expect(await fetchJson(`${base}/kit/lazy-rpc`)).toEqual({ label: 'lazy entrypoint' });
+	});
+
 	it('applies src/worker.ts edits with HMR and keeps Durable Object state', async () => {
 		const root = await createFixture();
 		const port = await getAvailablePort();

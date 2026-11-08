@@ -251,10 +251,10 @@ browser ──> Vite (Node) ──> Miniflare / workerd: src/worker.ts fetch
 - In dev, the module runner evaluates `src/worker.ts` on the first request, not at Worker startup.
   workerd's global-scope restrictions (no `crypto.randomUUID()`, timers or I/O at module top level)
   are only enforced by `wrangler dev` and production.
-- SvelteKit reaches Worker bindings through Miniflare's proxy, which reads stub properties
-  synchronously. A Durable Object method called from SvelteKit must not `import()` a module that
-  has not been loaded yet. Static imports are fine, because the Worker module is loaded before
-  SvelteKit runs.
+- SvelteKit reaches Worker bindings through Miniflare's proxy, which blocks Node during some calls.
+  The Worker module and every module it can still import (statically or with `import()`) are
+  loaded before SvelteKit runs, so Durable Objects and entrypoints that load their code lazily work.
+  The one remaining window is a request already in flight while you save a Worker file.
 - `cloudflare:workers` `exports` is not available to SvelteKit code in dev.
 - The dev runtime is disabled under Vitest (`process.env.VITEST`), so unit tests do not start workerd.
 

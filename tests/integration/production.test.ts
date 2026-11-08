@@ -68,6 +68,7 @@ describe('vite build + wrangler dev', () => {
 			30_000
 		);
 
+		expect(await fetchJson(`${base}/kit/lazy`)).toEqual({ value: 'lazy:1' });
 		await expectEntrypoints(server, base, 'v1');
 
 		await fetchOk(`${base}/cdn-cgi/handler/scheduled?cron=${encodeURIComponent('*/5 * * * *')}`);

@@ -84,9 +84,72 @@ async function runInRunnerObject(env, callback) {
 async function importWorkerModule(env) {
 	const node = moduleRunner.evaluatedModules.getModuleByUrl(settings.entry);
 	if (node && node === evaluatedEntry && node.evaluated && node.meta) return node.exports;
-	const exports = await runInRunnerObject(env, () => moduleRunner.import(settings.entry));
+	const exports = await runInRunnerObject(env, async () => {
+		const module = await moduleRunner.import(settings.entry);
+		await prefetchModules(env);
+		return module;
+	});
 	evaluatedEntry = moduleRunner.evaluatedModules.getModuleByUrl(settings.entry);
 	return exports;
+}
+
+/**
+ * `fetchModule` results of modules that are reachable but not evaluated yet, keyed by URL.
+ *
+ * Code that runs while SvelteKit holds Miniflare's synchronous proxy (a Durable Object
+ * constructor, the first call of an entrypoint method) cannot ask Vite for a module: Vite runs on
+ * the blocked Node thread. Every module the Worker can still import, statically or with
+ * `import()`, is therefore fetched ahead of time while Node is free. HMR clears the cache.
+ * @type {Map<string, any>}
+ */
+const prefetched = new Map();
+const IMPORT_PATTERN = /__vite_ssr_(dynamic_)?import__\(\s*(["'])([^"']+)\2/g;
+
+/** @param {any} env */
+async function prefetchModules(env) {
+	/** @type {[url: string, code: string][]} */
+	const queue = [];
+	for (const node of moduleRunner.evaluatedModules.idToModuleMap.values()) {
+		const code = /** @type {{ code?: string } | undefined} */ (node.meta)?.code;
+		if (code) queue.push([node.url, code]);
+	}
+	for (let item = queue.pop(); item; item = queue.pop()) {
+		const [url, code] = item;
+		for (const [, dynamic, , specifier] of code.matchAll(IMPORT_PATTERN)) {
+			const dependency =
+				dynamic && specifier.startsWith('.') ? resolveUrl(url, specifier) : specifier;
+			if (prefetched.has(dependency) || moduleRunner.evaluatedModules.getModuleByUrl(dependency)) {
+				continue;
+			}
+			const { result } = await invokeVite(env, {
+				type: 'custom',
+				event: 'vite:invoke',
+				data: { id: 'send', name: 'fetchModule', data: [dependency, url] }
+			});
+			if (!result) continue;
+			prefetched.set(dependency, result);
+			if (result.code) queue.push([dependency, result.code]);
+		}
+	}
+}
+
+/** The module runner's resolution of a relative dynamic import. @param {string} from @param {string} specifier */
+function resolveUrl(from, specifier) {
+	const segments = from.split('/').slice(0, -1);
+	for (const segment of specifier.split('/')) {
+		if (segment === '..') segments.pop();
+		else if (segment !== '.') segments.push(segment);
+	}
+	return segments.join('/');
+}
+
+/** @param {any} env @param {unknown} payload */
+async function invokeVite(env, payload) {
+	const response = await env[INVOKE_BINDING].fetch('http://localhost/', {
+		method: 'POST',
+		body: JSON.stringify(payload)
+	});
+	return response.json();
 }
 
 /** @param {any} env @param {string} name */
@@ -131,7 +194,11 @@ function createModuleRunner(env, webSocket) {
 			hmr: true,
 			transport: {
 				connect({ onMessage }) {
-					webSocket.addEventListener('message', ({ data }) => onMessage(JSON.parse(String(data))));
+					webSocket.addEventListener('message', ({ data }) => {
+						const payload = JSON.parse(String(data));
+						if (payload.type === 'update' || payload.type === 'full-reload') prefetched.clear();
+						onMessage(payload);
+					});
 				},
 				disconnect() {
 					webSocket.close();
@@ -139,12 +206,11 @@ function createModuleRunner(env, webSocket) {
 				send(data) {
 					env[RUNNER_OBJECT_BINDING].get('singleton').send(JSON.stringify(data));
 				},
-				async invoke(data) {
-					const response = await env[INVOKE_BINDING].fetch('http://localhost/', {
-						method: 'POST',
-						body: JSON.stringify(data)
-					});
-					return response.json();
+				async invoke(payload) {
+					const { name, data } = /** @type {any} */ (payload).data;
+					const cached = name === 'fetchModule' ? prefetched.get(data[0]) : undefined;
+					if (cached) return { result: data[2]?.cached ? { cache: true } : cached };
+					return invokeVite(env, payload);
 				}
 			}
 		},
@@ -270,22 +336,31 @@ function delegate(Wrapper, handlers, resolve) {
 }
 
 /**
- * Forward RPC property reads on `wrapper` to the instance returned by `getInstance`. The value
- * can be awaited (property access) or called (method call).
+ * Forward RPC property reads on `wrapper` to the class exported as `exportName`. The value can be
+ * awaited (property access) or called (method call).
+ *
+ * Methods resolve from the class alone: the instance, and with it the user constructor, is only
+ * created when the method is called. SvelteKit reads stub properties through Miniflare's proxy
+ * while the Node main thread is blocked, so a constructor that loads code with `import()` (which
+ * needs Vite, in Node) must not run during that read.
+ *
  * @param {any} wrapper
- * @param {(receiver: any) => Promise<{ ctor: Function, instance: any }>} getInstance
+ * @param {string} exportName
+ * @param {(receiver: any) => Promise<{ instance: any }>} getInstance
  */
-function forwardRpc(wrapper, getInstance) {
+function forwardRpc(wrapper, exportName, getInstance) {
 	return new Proxy(wrapper, {
 		get(target, key, receiver) {
 			const value = Reflect.get(target, key, receiver);
 			if (value !== undefined || typeof key === 'symbol' || IGNORED_KEYS.has(key)) return value;
-			const property = getInstance(receiver).then(({ ctor, instance }) => {
-				if (!Reflect.has(ctor.prototype, key)) {
-					throw new TypeError(`The RPC receiver does not implement "${key}".`);
+			const property = importExport(receiver.env, exportName).then((ctor) => {
+				const descriptor = findDescriptor(ctor.prototype, key);
+				if (!descriptor) throw new TypeError(`The RPC receiver does not implement "${key}".`);
+				if (typeof descriptor.value === 'function') {
+					return async (/** @type {unknown[]} */ ...args) =>
+						(await getInstance(receiver)).instance[key](...args);
 				}
-				const member = Reflect.get(ctor.prototype, key, instance);
-				return typeof member === 'function' ? member.bind(instance) : member;
+				return getInstance(receiver).then(({ instance }) => instance[key]);
 			});
 			const call = async (/** @type {unknown[]} */ ...args) => (await property)(...args);
 			return Object.assign(call, {
@@ -295,6 +370,14 @@ function forwardRpc(wrapper, getInstance) {
 			});
 		}
 	});
+}
+
+/** @param {object | null} prototype @param {string} key */
+function findDescriptor(prototype, key) {
+	for (let current = prototype; current; current = Object.getPrototypeOf(current)) {
+		const descriptor = Object.getOwnPropertyDescriptor(current, key);
+		if (descriptor) return descriptor;
+	}
 }
 
 const kInstance = Symbol('instance');
@@ -320,7 +403,7 @@ export function createDurableObjectWrapper(exportName) {
 		/** @param {DurableObjectState} ctx @param {any} env */
 		constructor(ctx, env) {
 			super(ctx, env);
-			return forwardRpc(this, getInstance);
+			return forwardRpc(this, exportName, getInstance);
 		}
 	}
 	delegate(Wrapper, DURABLE_OBJECT_HANDLERS, async (self, handler) => {
@@ -354,7 +437,7 @@ export function createWorkerEntrypointWrapper(exportName) {
 		/** @param {ExecutionContext} ctx @param {any} env */
 		constructor(ctx, env) {
 			super(ctx, env);
-			return forwardRpc(this, getInstance);
+			return forwardRpc(this, exportName, getInstance);
 		}
 	}
 	delegate(Wrapper, ENTRYPOINT_HANDLERS, async (self, handler) => {
