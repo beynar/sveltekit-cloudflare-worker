@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
+import { expect } from 'vitest';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const requestTimeoutMs = 10_000;
@@ -43,7 +44,7 @@ export async function createFixture(options: FixtureOptions = {}) {
 		$schema: 'node_modules/wrangler/config-schema.json',
 		name,
 		main: '.svelte-kit/cloudflare/_worker.js',
-		compatibility_date: '2026-10-01',
+		compatibility_date: '2026-08-01',
 		compatibility_flags: ['nodejs_compat'],
 		assets: { binding: 'ASSETS', directory: '.svelte-kit/cloudflare' },
 		vars: { GREETING: 'hello from vars' },
@@ -55,6 +56,8 @@ export async function createFixture(options: FixtureOptions = {}) {
 			consumers: [{ queue: `${name}-jobs`, max_batch_size: 1, max_batch_timeout: 1 }]
 		},
 		triggers: { crons: ['*/5 * * * *'] },
+		workflows: [{ name: `${name}-flow`, binding: 'FLOW', class_name: 'Doubler' }],
+		services: [{ binding: 'GREETER', service: name, entrypoint: 'Greeter' }],
 		...options.wrangler
 	};
 
@@ -101,6 +104,12 @@ export const GET = async ({ url }) => {
 	return Response.json({ source: 'sveltekit', count, greeting: env.GREETING });
 };
 `,
+		'src/routes/kit/rpc/+server.ts': `import { env } from 'cloudflare:workers';
+
+export const GET = async ({ url }) => {
+	return Response.json({ greeting: await env.GREETER.greet(url.searchParams.get('name') ?? 'kit') });
+};
+`,
 		'src/routes/kit/kv/+server.ts': `import { env } from 'cloudflare:workers';
 
 export const GET = async ({ url }) => {
@@ -132,7 +141,7 @@ export function uuidLength() {
 
 /** The fixture Worker. `version` is returned by /api/version and changes on HMR. */
 function workerSource(version: string) {
-	return `import { DurableObject } from 'cloudflare:workers';
+	return `import { DurableObject, WorkerEntrypoint, WorkflowEntrypoint } from 'cloudflare:workers';
 import { message } from '$lib/message';
 import { hash, uuidLength } from '#lib/hash';
 
@@ -162,6 +171,17 @@ export async function fetch(request, env, ctx, next) {
 		wrapped.headers.set('x-worker-after', VERSION);
 		return wrapped;
 	}
+	if (url.pathname === '/api/workflow') {
+		const instance = await env.FLOW.create({ params: { value: Number(url.searchParams.get('value')) } });
+		return Response.json({ id: instance.id });
+	}
+	if (url.pathname === '/api/workflow/status') {
+		const instance = await env.FLOW.get(url.searchParams.get('id'));
+		return Response.json(await instance.status());
+	}
+	if (url.pathname === '/api/rpc') {
+		return Response.json({ greeting: await env.GREETER.greet(url.searchParams.get('name') ?? 'worker') });
+	}
 	if (url.pathname === '/api/wait-until-last') {
 		const order = [];
 		ctx.waitUntil(new Promise((resolve) => setTimeout(resolve, 20)).then(() => order.push('first')));
@@ -177,6 +197,23 @@ export async function queue(batch, env) {
 	for (const message of batch.messages) {
 		await env.KV.put('queue:' + message.body.id, 'processed');
 		message.ack();
+	}
+}
+
+export async function email(message, env) {
+	await env.KV.put('email', message.from + ' -> ' + message.to);
+}
+
+export class Doubler extends WorkflowEntrypoint {
+	async run(event, step) {
+		const doubled = await step.do('double', async () => event.payload.value * 2);
+		return { doubled, version: VERSION };
+	}
+}
+
+export class Greeter extends WorkerEntrypoint {
+	greet(name) {
+		return 'hello ' + name + ' from ' + VERSION;
 	}
 }
 
@@ -382,6 +419,51 @@ export async function waitForJson<T>(
 		},
 		timeoutMs
 	);
+}
+
+/**
+ * Workflows, a named `WorkerEntrypoint` called over RPC (from the Worker and from SvelteKit) and
+ * the `email` handler, against a running dev server or `wrangler dev`.
+ */
+export async function expectEntrypoints(server: Server, base: string, version: string) {
+	const { id } = await fetchJson<{ id: string }>(`${base}/api/workflow?value=21`);
+	const workflow = await waitForJson<{ status: string; output?: unknown }>(
+		server,
+		`${base}/api/workflow/status?id=${id}`,
+		(body) => body.status === 'complete',
+		30_000
+	);
+	expect(workflow.output).toEqual({ doubled: 42, version });
+
+	expect(await fetchJson(`${base}/api/rpc?name=worker`)).toEqual({
+		greeting: `hello worker from ${version}`
+	});
+	expect(await fetchJson(`${base}/kit/rpc?name=kit`)).toEqual({
+		greeting: `hello kit from ${version}`
+	});
+
+	const from = `${crypto.randomUUID()}@example.com`;
+	await fetchOk(`${base}/cdn-cgi/handler/email?from=${from}&to=inbox@example.com`, {
+		method: 'POST',
+		body: rawEmail(from, 'inbox@example.com')
+	});
+	await waitForJson<{ value: string | null }>(
+		server,
+		`${base}/kit/kv?key=email`,
+		(body) => body.value === `${from} -> inbox@example.com`
+	);
+}
+
+/** A minimal RFC 5322 message for the local email trigger. */
+export function rawEmail(from: string, to: string) {
+	return [
+		`From: ${from}`,
+		`To: ${to}`,
+		`Message-ID: <${crypto.randomUUID()}@example.com>`,
+		'Subject: fixture',
+		'',
+		'hello'
+	].join('\r\n');
 }
 
 /** Open a WebSocket, send one message and resolve with the first reply. */

@@ -7,6 +7,7 @@ import {
 	createFixture,
 	fetchJson,
 	fetchOk,
+	expectEntrypoints,
 	getAvailablePort,
 	readFixtureFile,
 	startWranglerDev,
@@ -66,6 +67,8 @@ describe('vite build + wrangler dev', () => {
 			(body) => body.value === 'processed',
 			30_000
 		);
+
+		await expectEntrypoints(server, base, 'v1');
 
 		await fetchOk(`${base}/cdn-cgi/handler/scheduled?cron=${encodeURIComponent('*/5 * * * *')}`);
 		await waitForJson<{ value: string | null }>(

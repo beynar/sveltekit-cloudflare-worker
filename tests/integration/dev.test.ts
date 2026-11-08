@@ -6,6 +6,7 @@ import {
 	createFixture,
 	fetchJson,
 	fetchOk,
+	expectEntrypoints,
 	getAvailablePort,
 	startDevServer,
 	waitFor,
@@ -69,6 +70,8 @@ describe('vite dev', () => {
 			30_000
 		);
 
+		await expectEntrypoints(server, base, 'v1');
+
 		await fetchOk(`${base}/cdn-cgi/handler/scheduled?cron=${encodeURIComponent('*/5 * * * *')}`);
 		await waitForJson<{ value: string | null }>(
 			server,
@@ -114,6 +117,9 @@ describe('vite dev', () => {
 		);
 		expect(reply).toBe('v2:after-hmr:2');
 		expect((await fetchJson<{ count: number }>(`${base}/kit/counter?name=${name}`)).count).toBe(3);
+
+		// Named entrypoints called over RPC also pick up the new module.
+		expect(await fetchJson(`${base}/api/rpc?name=hmr`)).toEqual({ greeting: 'hello hmr from v2' });
 
 		// HMR, not a dev-server restart.
 		expect(server.getOutput()).not.toContain('server restarted');

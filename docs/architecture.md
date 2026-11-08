@@ -88,7 +88,14 @@ reconnects and SvelteKit's bindings are refreshed. Storage persists in `.wrangle
 - `src/lib/index.test.ts`: adapter shape and plugin gating, composition and its hard errors,
   alias / `#imports` / built-in resolution, `waitUntil.last`, generated types.
 - `tests/integration/dev.test.ts`: middleware, fallthrough and `next()`, shared SQLite Durable
-  Object between Worker and SvelteKit, same-origin WebSocket, queue, scheduled, `waitUntil.last`,
-  HMR with state kept, export-shape reload, persistence across restarts.
+  Object between Worker and SvelteKit, same-origin WebSocket, queue, scheduled, email, a Workflow,
+  a named `WorkerEntrypoint` called over RPC from the Worker and from SvelteKit, `waitUntil.last`,
+  HMR with state kept (Durable Objects and RPC entrypoints), export-shape reload, persistence
+  across restarts.
 - `tests/integration/production.test.ts`: `vite build` + `wrangler dev` of the composed Worker with
   the same scenarios, and private modules not served.
+- CI (`.github/workflows/ci.yml`) runs the integration suite against the lower bound of the
+  Wrangler peer range (4.125.0) and the newest release.
+
+Not covered yet: `tail`, `trace` and `tailStream` handlers (they need a second Worker as tail
+consumer), `connect` in production, and remote bindings with a real Wrangler session.

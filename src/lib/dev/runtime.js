@@ -400,10 +400,14 @@ class DevRuntime {
 			/** @type {any} */ (req).originalUrl ?? req.url,
 			`${protocol}://${req.headers.host ?? req.headers[':authority']}`
 		);
-		// Wrangler's documented trigger paths; Miniflare 5 serves `scheduled` at CorePaths.SCHEDULED.
-		if (url.pathname === '/cdn-cgi/handler/scheduled' || url.pathname === '/__scheduled') {
-			url.pathname = this.miniflareModule.CorePaths.SCHEDULED;
-		}
+		// Wrangler's documented trigger paths; Miniflare 5 serves them under CorePaths.
+		const { SCHEDULED, EMAIL } = this.miniflareModule.CorePaths;
+		const trigger = {
+			'/__scheduled': SCHEDULED,
+			'/cdn-cgi/handler/scheduled': SCHEDULED,
+			'/cdn-cgi/handler/email': EMAIL
+		}[url.pathname];
+		if (trigger) url.pathname = trigger;
 		const hasBody = req.method !== 'GET' && req.method !== 'HEAD';
 		return this.shared.miniflare.dispatchFetch(url, {
 			method: req.method,
