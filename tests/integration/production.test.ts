@@ -31,6 +31,7 @@ describe('vite build + wrangler dev', () => {
 		const ignore = await readFixtureFile(root, '.svelte-kit/cloudflare/.assetsignore');
 		expect(ignore).toContain('_user-worker.js');
 		expect(ignore).toContain('_sveltekit-worker.js');
+		expect(ignore).toMatch(/^add-[0-9a-f]{8}\.wasm$/m);
 		expect(existsSync(path.join(root, '.svelte-kit/cloudflare/_sveltekit-worker.js'))).toBe(true);
 
 		const port = await getAvailablePort();
@@ -68,6 +69,7 @@ describe('vite build + wrangler dev', () => {
 			30_000
 		);
 
+		expect(await fetchJson(`${base}/api/wasm`)).toEqual({ sum: 5 });
 		expect(await fetchJson(`${base}/kit/lazy`)).toEqual({ value: 'lazy:1' });
 		await expectEntrypoints(server, base, 'v1');
 

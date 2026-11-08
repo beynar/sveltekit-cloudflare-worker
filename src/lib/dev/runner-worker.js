@@ -14,7 +14,8 @@ import {
 	INVOKE_BINDING,
 	KNOWN_HANDLERS,
 	NEXT_BINDING,
-	RUNNER_OBJECT_BINDING
+	RUNNER_OBJECT_BINDING,
+	WASM_GLOBAL
 } from '../constants.js';
 import { __sveltekitCloudflareWorkerWaitUntilLast as wrapWaitUntilLast } from '../wait-until-last.js';
 
@@ -188,6 +189,8 @@ export class __SVELTEKIT_CF_RUNNER__ extends DurableObject {
 
 /** @param {any} env @param {WebSocket} webSocket */
 function createModuleRunner(env, webSocket) {
+	/** @type {any} */ (globalThis)[WASM_GLOBAL] = (/** @type {string} */ base64) =>
+		env[EVAL_BINDING].newWasmModule(Uint8Array.from(atob(base64), (char) => char.charCodeAt(0)));
 	return new ModuleRunner(
 		{
 			sourcemapInterceptor: 'prepareStackTrace',

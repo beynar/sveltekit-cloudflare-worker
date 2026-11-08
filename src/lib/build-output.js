@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { parse } from 'acorn';
 import { LOG_PREFIX, readWranglerConfig } from './project.js';
@@ -46,14 +46,19 @@ export async function composeBuildOutput({
 		);
 	}
 
-	const { content, exports } = await bundleWorker(workerPath, { aliases });
+	const { content, exports, modules } = await bundleWorker(workerPath, { aliases });
 	const directory = path.dirname(entry);
 	writeFileSync(path.join(directory, USER_WORKER), content);
+	for (const { name, file } of modules) copyFileSync(file, path.join(directory, name));
 	writeFileSync(path.join(directory, SVELTEKIT_WORKER), svelteKitWorker);
 	writeFileSync(entry, createWorkerFacade(exports));
 
 	const assetsDirectory = path.resolve(path.dirname(config.configPath), config.assets.directory);
-	ignoreInternalModules(assetsDirectory, directory);
+	ignoreInternalModules(
+		assetsDirectory,
+		directory,
+		modules.map(({ name }) => name)
+	);
 
 	log(
 		`Composed ${entry}: handlers=[${exports.handlers.join(', ')}] classes=[${exports.classes.join(', ')}]`
@@ -86,12 +91,15 @@ function hasDefaultFetchExport(source) {
  * out of the public assets.
  * @param {string} assetsDirectory
  * @param {string} modulesDirectory
+ * @param {string[]} extraModules
  */
-function ignoreInternalModules(assetsDirectory, modulesDirectory) {
+function ignoreInternalModules(assetsDirectory, modulesDirectory, extraModules) {
 	const relative = path.relative(assetsDirectory, modulesDirectory).split(path.sep).join('/');
 	if (relative.startsWith('..')) return;
 	const file = path.join(assetsDirectory, '.assetsignore');
 	const current = existsSync(file) ? readFileSync(file, 'utf-8').trimEnd() : '';
-	const entries = [SVELTEKIT_WORKER, USER_WORKER].map((name) => path.posix.join(relative, name));
+	const entries = [SVELTEKIT_WORKER, USER_WORKER, ...extraModules].map((name) =>
+		path.posix.join(relative, name)
+	);
 	writeFileSync(file, `${current}\n${entries.join('\n')}\n`.trimStart());
 }

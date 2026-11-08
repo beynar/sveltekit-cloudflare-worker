@@ -46,6 +46,7 @@ const OBJECT_BINDINGS = /** @type {const} */ ([
  *   classExports: string[],
  *   configPath?: string,
  *   cloudflareEnv?: string,
+ *   strictVars?: boolean,
  *   log: (...args: unknown[]) => void
  * }} options
  */
@@ -56,6 +57,7 @@ export function writeAppEnvTypes({
 	classExports,
 	configPath,
 	cloudflareEnv,
+	strictVars = true,
 	log
 }) {
 	const file = path.resolve(root, typesFile);
@@ -77,7 +79,7 @@ export function writeAppEnvTypes({
 	}
 	for (const name of config.secrets?.required ?? []) bindings.push([name, 'string']);
 	for (const [name, value] of Object.entries(config.vars))
-		bindings.push([name, literalType(value)]);
+		bindings.push([name, strictVars ? literalType(value) : widenedType(value)]);
 	for (const name of Object.keys(config.text_blobs ?? {})) bindings.push([name, 'string']);
 	for (const name of Object.keys(config.data_blobs ?? {})) bindings.push([name, 'ArrayBuffer']);
 	for (const { name, class_name } of config.durable_objects.bindings) {
@@ -131,6 +133,15 @@ export function writeAppEnvTypes({
 		writeFileSync(file, next);
 		log(`Updated ${path.relative(root, file)} with Cloudflare binding types.`);
 	}
+}
+
+/**
+ * The type of a var without its value, so configs that differ only by values (ports, origins)
+ * produce the same declarations, like `wrangler types --strict-vars false`.
+ * @param {unknown} value
+ */
+function widenedType(value) {
+	return ['string', 'number', 'boolean'].includes(typeof value) ? typeof value : 'unknown';
 }
 
 /** @param {unknown} value */

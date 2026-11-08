@@ -13,6 +13,9 @@ export const INVOKE_BINDING = '__SVELTEKIT_CF_INVOKE__';
 export const EVAL_BINDING = '__SVELTEKIT_CF_EVAL__';
 export const NEXT_BINDING = '__SVELTEKIT_CF_NEXT__';
 
+/** Global the runner defines to build WebAssembly modules imported as `.wasm` during `vite dev`. */
+export const WASM_GLOBAL = '__sveltekitCloudflareWorkerWasm';
+
 export const INTERNAL_BINDINGS = [
 	RUNNER_OBJECT_BINDING,
 	INVOKE_BINDING,

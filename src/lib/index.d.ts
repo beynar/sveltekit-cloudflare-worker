@@ -40,6 +40,12 @@ export interface CloudflareWorkerOptions extends Pick<
 	 */
 	typesFile?: string | false;
 	/**
+	 * Type `vars` with their literal values (`'https://example.com'`). Set to `false` to type them as
+	 * `string`, `number` or `boolean`, so configs that differ only by values generate the same file.
+	 * @default true
+	 */
+	strictVars?: boolean;
+	/**
 	 * Where `vite dev` persists local binding state. The default is shared with Wrangler, so
 	 * `wrangler d1 migrations apply --local` and `wrangler dev` see the same data.
 	 * @default true (`.wrangler/state/v3` next to the Wrangler config)

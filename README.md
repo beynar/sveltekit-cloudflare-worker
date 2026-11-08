@@ -148,6 +148,11 @@ Rules for the entry:
 - Imports resolve like the rest of the app: `#lib/...` package imports, Vite `resolve.alias` entries
   (for example a `$lib` alias), `node:*` and bare Node built-ins such as `crypto` with
   `nodejs_compat`. SvelteKit's own modules (`$app/*`, `$env/*`) are not available in the Worker.
+- `import module from './x.wasm'` (or `./x.wasm?module`) gives a `WebAssembly.Module`, like a
+  Cloudflare CompiledWasm module, in dev and in the build. workerd refuses to compile WebAssembly
+  from bytes at run time, so use an import rather than `WebAssembly.compile()`.
+- `import.meta.glob` only exists in `vite dev` (the production bundle is built by esbuild). It can
+  read files anywhere in the project, not only under `src/`.
 
 ## Use the bindings from SvelteKit
 
@@ -238,6 +243,7 @@ browser ──> Vite (Node) ──> Miniflare / workerd: src/worker.ts fetch
 | `config`             | first `wrangler.json(c)` | Wrangler config path. Also passed to adapter-cloudflare.        |
 | `environment`        | `CLOUDFLARE_ENV`         | Wrangler environment used by dev and the build.                 |
 | `typesFile`          | `'src/app.d.ts'`         | File that receives the `Cloudflare.Env` block, or `false`.      |
+| `strictVars`         | `true`                   | `false` types `vars` as `string`/`number`/`boolean`.            |
 | `persistState`       | `true`                   | `false`, or `{ path }` instead of `.wrangler/state`.            |
 | `remoteBindings`     | `true`                   | Start Wrangler's remote proxy session for remote-only bindings. |
 | `root`               | Vite's root              | Project root, when it differs from Vite's root.                 |

@@ -2,6 +2,7 @@
 // through Vite's module runner (HMR), and exposes the same bindings to SvelteKit's Node SSR
 // through `cloudflare:workers`.
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { builtinModules, createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -17,6 +18,7 @@ import {
 	INVOKE_BINDING,
 	NEXT_BINDING,
 	RUNNER_OBJECT_BINDING,
+	WASM_GLOBAL,
 	WORKER_ENVIRONMENT
 } from '../constants.js';
 import { LOG_PREFIX, readWranglerConfig } from '../project.js';
@@ -70,8 +72,26 @@ export function devRuntimePlugins(options) {
 			name: 'sveltekit-cloudflare-worker:dev-environment',
 			apply: devOnly,
 			config: (_config, env) => ({
-				environments: { [WORKER_ENVIRONMENT]: workerEnvironmentOptions(options, env.mode) }
+				environments: { [WORKER_ENVIRONMENT]: workerEnvironmentOptions(options, env.mode) },
+				// Local state (D1, R2, Durable Objects, sent emails) changes on every request.
+				server: { watch: { ignored: ['**/.wrangler/**'] } }
 			})
+		},
+		{
+			// `import module from './x.wasm'` is a CompiledWasm module on Cloudflare: its default export
+			// is a WebAssembly.Module. workerd forbids compiling WebAssembly at run time, so the runner
+			// builds the module through the unsafe-eval binding (see runner-worker.js).
+			name: 'sveltekit-cloudflare-worker:dev-wasm',
+			apply: devOnly,
+			enforce: 'pre',
+			applyToEnvironment: (environment) => environment.name === WORKER_ENVIRONMENT,
+			load(id) {
+				const [file, query] = id.split('?');
+				if (!file.endsWith('.wasm') || (query !== undefined && query !== 'module')) return;
+				this.addWatchFile(file);
+				const base64 = readFileSync(file).toString('base64');
+				return `export default globalThis.${WASM_GLOBAL}(${JSON.stringify(base64)});`;
+			}
 		},
 		{
 			// esm-env would pick its `browser` build from the Worker conditions.
@@ -222,6 +242,9 @@ function createHotChannel() {
 		for (const listener of listeners.get(name) ?? []) listener(data, client);
 	};
 	return {
+		// Server environments are trusted: like Vite's own SSR channel, skip the `server.fs.allow`
+		// check that protects the browser (SvelteKit narrows it to src/ and a few folders).
+		skipFsCheck: true,
 		/** @param {any} next */
 		attach(next) {
 			webSocket?.removeEventListener('message', onMessage);

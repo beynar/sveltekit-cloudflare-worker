@@ -31,7 +31,7 @@ export type FixtureOptions = {
 	/** Wrangler config overrides merged at the top level. */
 	wrangler?: Record<string, unknown>;
 	/** Extra files, relative to the fixture root. */
-	files?: Record<string, string>;
+	files?: Record<string, string | Buffer>;
 };
 
 /** A SvelteKit 3 app (no svelte.config.js) using the package from this repository. */
@@ -66,7 +66,7 @@ export async function createFixture(options: FixtureOptions = {}) {
 		...options.wrangler
 	};
 
-	const files: Record<string, string> = {
+	const files: Record<string, string | Buffer> = {
 		'package.json': JSON.stringify(
 			{
 				name,
@@ -124,6 +124,13 @@ export const GET = async ({ url }) => {
 		'src/lib/message.ts': `export const message = 'hello from $lib';\n`,
 		'src/lazy-impl.ts': `let count = 0;\nexport function next() {\n\treturn ++count;\n}\n`,
 		'src/lazy-label.ts': `export const label = 'lazy';\n`,
+		// A WebAssembly module exporting add(a, b).
+		'src/add.wasm': Buffer.from(
+			'AGFzbQEAAAABBwFgAn9/AX8DAgEABwcBA2FkZAAACgkBBwAgACABags=',
+			'base64'
+		),
+		// Outside src/: SvelteKit narrows server.fs.allow, which must not apply to Worker code.
+		'migrations/0001_init.sql': 'CREATE TABLE things (id INTEGER);\n',
 		'src/lazy-entrypoint.ts': `export const label = 'lazy entrypoint';\n`,
 		'src/routes/kit/lazy-rpc/+server.ts': `import { env } from 'cloudflare:workers';
 
@@ -161,6 +168,7 @@ export function uuidLength() {
 /** The fixture Worker. `version` is returned by /api/version and changes on HMR. */
 function workerSource(version: string) {
 	return `import { DurableObject, WorkerEntrypoint, WorkflowEntrypoint } from 'cloudflare:workers';
+import adder from './add.wasm';
 import { message } from '$lib/message';
 import { hash, uuidLength } from '#lib/hash';
 
@@ -169,6 +177,17 @@ export const VERSION = ${JSON.stringify(version)};
 export async function fetch(request, env, ctx, next) {
 	const url = new URL(request.url);
 	if (url.pathname === '/api/version') return Response.json({ version: VERSION });
+	if (url.pathname === '/api/wasm') {
+		const instance = await WebAssembly.instantiate(adder);
+		return Response.json({ sum: instance.exports.add(2, 3) });
+	}
+	if (url.pathname === '/api/glob') {
+		// Dev only, like any import.meta.glob in the Worker: the production bundle is built by esbuild.
+		const files = typeof import.meta.glob === 'function'
+			? import.meta.glob('/migrations/*.sql', { query: '?raw', import: 'default', eager: true })
+			: {};
+		return Response.json(files);
+	}
 	if (url.pathname === '/api/modules') {
 		return Response.json({ message, hash: hash('fixture'), uuidLength: uuidLength() });
 	}

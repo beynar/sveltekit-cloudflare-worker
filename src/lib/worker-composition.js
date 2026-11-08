@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { builtinModules } from 'node:module';
 import path from 'node:path';
@@ -29,10 +30,12 @@ const FRAMEWORK_ALIASES = new Set(['$app', '$env', '<sveltekit:generated>']);
  *
  * @param {string} workerPath
  * @param {{ aliases?: readonly Alias[], logLevel?: 'silent' | 'warning' }} [options]
- * @returns {Promise<{ content: string, exports: WorkerExports }>}
+ * @returns {Promise<{ content: string, exports: WorkerExports, modules: { name: string, file: string }[] }>}
  */
 export async function bundleWorker(workerPath, { aliases = [], logLevel = 'warning' } = {}) {
 	const { build } = await import('esbuild');
+	/** @type {Map<string, string>} */
+	const wasm = new Map();
 	const result = await build({
 		entryPoints: [workerPath],
 		write: false,
@@ -44,12 +47,45 @@ export async function bundleWorker(workerPath, { aliases = [], logLevel = 'warni
 		conditions: ['workerd', 'worker'],
 		external: ['cloudflare:*', 'node:*'],
 		resolveExtensions: RESOLVE_EXTENSIONS,
-		plugins: [resolvePlugin(aliases)],
+		plugins: [wasmPlugin(wasm), resolvePlugin(aliases)],
 		logLevel
 	});
 	const [output] = Object.values(result.metafile.outputs);
 	const content = result.outputFiles[0].text;
-	return { content, exports: classifyWorkerExports(output.exports, content) };
+	return {
+		content,
+		exports: classifyWorkerExports(output.exports, content),
+		modules: [...wasm].map(([name, file]) => ({ name, file }))
+	};
+}
+
+/**
+ * `import module from './x.wasm'` (or `x.wasm?module`) is a CompiledWasm module on Cloudflare.
+ * Keep it external as a file next to the bundle: Wrangler's default module rules upload it as
+ * CompiledWasm, and its default export is a WebAssembly.Module.
+ * @param {Map<string, string>} modules output file name -> source path
+ * @returns {import('esbuild').Plugin}
+ */
+function wasmPlugin(modules) {
+	return {
+		name: 'sveltekit-cloudflare-worker:wasm',
+		setup(build) {
+			build.onResolve({ filter: /\.wasm(\?module)?$/ }, async (args) => {
+				if (args.pluginData?.wasm) return undefined;
+				const resolved = await build.resolve(args.path.replace(/\?module$/, ''), {
+					kind: args.kind,
+					importer: args.importer,
+					resolveDir: args.resolveDir,
+					pluginData: { wasm: true, resolved: true }
+				});
+				if (resolved.errors.length > 0) return { errors: resolved.errors };
+				const hash = createHash('sha256').update(readFileSync(resolved.path)).digest('hex');
+				const name = `${path.basename(resolved.path, '.wasm')}-${hash.slice(0, 8)}.wasm`;
+				modules.set(name, resolved.path);
+				return { path: `./${name}`, external: true };
+			});
+		}
+	};
 }
 
 /** @param {string} workerPath @param {readonly Alias[]} [aliases] */

@@ -79,6 +79,12 @@ describe('vite dev', () => {
 			(body) => body.value === '*/5 * * * *'
 		);
 
+		// WebAssembly modules and import.meta.glob outside src/.
+		expect(await fetchJson(`${base}/api/wasm`)).toEqual({ sum: 5 });
+		expect(await fetchJson(`${base}/api/glob`)).toEqual({
+			'/migrations/0001_init.sql': 'CREATE TABLE things (id INTEGER);\n'
+		});
+
 		await fetchOk(`${base}/api/wait-until-last`);
 		await waitForJson<{ value: string | null }>(
 			server,
@@ -87,6 +93,8 @@ describe('vite dev', () => {
 		);
 
 		expect(server.getOutput()).not.toMatch(/error/i);
+		// Local state (including sent emails) lives in .wrangler and must not reload the page.
+		expect(server.getOutput()).not.toMatch(/reload .*\.wrangler/);
 	});
 
 	it('lets SvelteKit call a Durable Object that loads its code with import()', async () => {

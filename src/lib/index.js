@@ -81,7 +81,12 @@ export function cloudflareWorkerAdapter(options = {}) {
 			const { classes } = await detectWorkerExports(workerPath, aliases).catch(() =>
 				detectWorkerExportsShallow(workerPath)
 			);
-			writeAppEnvTypes({ ...settings, typesFile, classExports: classes });
+			writeAppEnvTypes({
+				...settings,
+				typesFile,
+				classExports: classes,
+				strictVars: options.strictVars
+			});
 		}
 	};
 
